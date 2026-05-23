@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Code Orchestrator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Sidebar ── -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <div class="logo">C</div>
+      <div>
+        <h1>Orchestrator</h1>
+        <span>Claude Code Supervisor</span>
+      </div>
+    </div>
+    <button id="new-job-btn">+ New Job</button>
+    <div id="job-list"></div>
+  </div>
+
+  <!-- ── Main ── -->
+  <div id="main">
+
+    <!-- Job detail panel -->
+    <div id="detail-panel">
+      <div id="detail-empty">Select or start a job</div>
+
+      <div id="detail-content" style="display:none">
+        <!-- Row 1: prompt + cancel -->
+        <div class="detail-row detail-row-prompt">
+          <div id="detail-prompt"></div>
+          <div class="detail-actions">
+            <button id="retry-btn" class="btn-action btn-retry" title="Re-run this prompt as a new job">↺ Retry</button>
+            <button id="cancel-btn" class="btn-action btn-cancel" title="Cancel running job">✕ Cancel</button>
+          </div>
+        </div>
+
+        <!-- Row 2: metadata chips -->
+        <div class="detail-row detail-row-meta">
+          <div class="meta-chip" id="meta-state-wrap">
+            <span class="meta-label">State</span>
+            <span id="meta-state"></span>
+          </div>
+          <div class="meta-chip">
+            <span class="meta-label">ID</span>
+            <span id="meta-id" class="meta-mono"></span>
+          </div>
+          <div class="meta-chip">
+            <span class="meta-label">Created</span>
+            <span id="meta-created"></span>
+          </div>
+          <div class="meta-chip">
+            <span class="meta-label">Updated</span>
+            <span id="meta-updated"></span>
+          </div>
+          <div class="meta-chip" id="meta-cwd-wrap">
+            <span class="meta-label">Working Dir</span>
+            <span id="meta-cwd" class="meta-mono"></span>
+          </div>
+          <div class="meta-chip" id="meta-session-wrap">
+            <span class="meta-label">Session</span>
+            <span id="meta-session" class="meta-mono"></span>
+          </div>
+          <div class="meta-chip" id="meta-resumes-wrap">
+            <span class="meta-label">Resumes</span>
+            <span id="meta-resumes"></span>
+          </div>
+          <div class="meta-chip meta-chip-error" id="meta-error-wrap">
+            <span class="meta-label">Error</span>
+            <span id="meta-error"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div id="empty-state">
+      <div class="icon">⬡</div>
+      <p>Start a new job to begin orchestrating Claude Code</p>
+      <p style="font-size:12px;">Jobs resume automatically after rate-limit resets</p>
+    </div>
+
+    <!-- Output terminal -->
+    <div id="output-wrap"></div>
+
+    <!-- Message input bar (shown when job has an active session) -->
+    <div id="msg-bar">
+      <input id="msg-input" type="text" placeholder="Send a message to Claude… (Enter to send)" autocomplete="off" />
+      <button id="msg-send">Send</button>
+    </div>
+
+    <!-- Status bar -->
+    <div id="statusbar">
+      <span id="status-conn">
+        <span id="status-dot"></span>
+        <span id="status-text">Disconnected</span>
+      </span>
+      <span id="status-seq"></span>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── New Job Modal ── -->
+<div id="modal-overlay">
+  <div id="modal">
+    <h2>New Job</h2>
+
+    <label for="prompt-input">Task prompt <span style="color:var(--text-muted)">(Ctrl+Enter to submit)</span></label>
+    <textarea id="prompt-input" placeholder="Describe the coding task for Claude Code…"></textarea>
+
+    <label for="cwd-input">Working directory <span style="color:var(--text-muted)">(optional, defaults to home)</span></label>
+    <input type="text" id="cwd-input" placeholder="/home/user/myproject" />
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-submit">Start Job</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

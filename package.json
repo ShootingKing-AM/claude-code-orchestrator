@@ -1,0 +1,20 @@
+{
+  "name": "orch",
+  "version": "1.0.0",
+  "description": "A lightweight web-based supervisor that runs Claude Code as a worker, streams output live to a browser UI, and automatically resumes jobs when usage limits reset.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}
