@@ -13,13 +13,32 @@
   <div id="sidebar">
     <div id="sidebar-header">
       <div class="logo">C</div>
-      <div>
+      <div class="sidebar-header-text">
         <h1>Orchestrator</h1>
         <span>Claude Code Supervisor</span>
       </div>
+      <button id="sidebar-toggle" title="Collapse sidebar">‹</button>
     </div>
     <button id="new-job-btn">+ New Job</button>
     <div id="job-list"></div>
+    <div id="stats-bar">
+      <div class="stat-item" title="Total claude subprocesses launched this session">
+        <span class="stat-label">Spawned</span>
+        <span class="stat-value" id="stat-spawned">0</span>
+      </div>
+      <div class="stat-item" title="Jobs currently running">
+        <span class="stat-label">Running</span>
+        <span class="stat-value" id="stat-running">0</span>
+      </div>
+      <div class="stat-item" title="Total input tokens consumed across all jobs">
+        <span class="stat-label">In tok</span>
+        <span class="stat-value" id="stat-in-tok">0</span>
+      </div>
+      <div class="stat-item" title="Total output tokens produced across all jobs">
+        <span class="stat-label">Out tok</span>
+        <span class="stat-value" id="stat-out-tok">0</span>
+      </div>
+    </div>
   </div>
 
   <!-- ── Main ── -->
@@ -32,6 +51,11 @@
       <div id="detail-content" style="display:none">
         <!-- Row 1: prompt + cancel -->
         <div class="detail-row detail-row-prompt">
+          <div class="detail-title-wrap">
+            <div id="detail-title" class="detail-title"></div>
+            <button id="edit-title-btn" class="btn-edit-title" title="Edit title">✎</button>
+            <input id="edit-title-input" class="edit-title-input" type="text" style="display:none" />
+          </div>
           <div id="detail-prompt"></div>
           <div class="detail-actions">
             <button id="retry-btn" class="btn-action btn-retry" title="Re-run this prompt as a new job">↺ Retry</button>
@@ -68,6 +92,10 @@
           <div class="meta-chip" id="meta-resumes-wrap">
             <span class="meta-label">Resumes</span>
             <span id="meta-resumes"></span>
+          </div>
+          <div class="meta-chip" id="meta-tokens-wrap">
+            <span class="meta-label">Tokens</span>
+            <span id="meta-tokens"></span>
           </div>
           <div class="meta-chip meta-chip-error" id="meta-error-wrap">
             <span class="meta-label">Error</span>
@@ -124,6 +152,9 @@
 <div id="modal-overlay">
   <div id="modal">
     <h2>New Job</h2>
+
+    <label for="title-input">Title <span style="color:var(--text-muted)">(optional)</span></label>
+    <input type="text" id="title-input" placeholder="Short name for this job…" />
 
     <label for="prompt-input">Task prompt <span style="color:var(--text-muted)">(Ctrl+Enter to submit)</span></label>
     <div id="modal-chips" class="attachment-chips"></div>
