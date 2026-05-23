@@ -820,3 +820,16 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 .user-msg-img:hover { opacity: 0.85; }
 .user-msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* ── Unread notification dot ─────────────────────────────────────────────── */
+.unread-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px var(--accent);
+}

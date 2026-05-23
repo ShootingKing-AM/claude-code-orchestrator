@@ -89,7 +89,14 @@ async def start_job(req: StartJobRequest):
 
 @app.get("/api/jobs")
 async def list_jobs():
-    return [j.to_dict() for j in store.list_jobs()]
+    jobs = store.list_jobs()
+    last_seqs = store.last_seq_by_job()
+    result = []
+    for j in jobs:
+        d = j.to_dict()
+        d["last_seq"] = last_seqs.get(j.id, 0)
+        result.append(d)
+    return result
 
 
 @app.get("/api/jobs/{job_id}")

@@ -3,6 +3,21 @@
 // ── State ────────────────────────────────────────────────────────────────────
 
 let activeJobId = null;
+
+// ── Unread tracking ───────────────────────────────────────────────────────────
+const _seenSeq = (() => {
+  try { return JSON.parse(localStorage.getItem("orch_seen_seq") || "{}"); }
+  catch { return {}; }
+})();
+function _saveSeenSeq() {
+  try { localStorage.setItem("orch_seen_seq", JSON.stringify(_seenSeq)); } catch {}
+}
+function markJobRead(jobId, seq) {
+  if ((_seenSeq[jobId] || 0) < seq) { _seenSeq[jobId] = seq; _saveSeenSeq(); }
+}
+function hasUnread(job) {
+  return (job.last_seq || 0) > (_seenSeq[job.id] || 0);
+}
 let activeJob   = null;
 let evtSource   = null;
 let seqCount    = 0;
@@ -221,8 +236,9 @@ function renderJobList(jobs) {
     const ts = new Date(job.updated_at + "Z").toLocaleTimeString();
     const qpos = _queuePositions[job.id];
     const queueBadge = qpos ? `<span class="badge badge-queued queue-pos">#${qpos}</span>` : "";
+    const unreadDot = (hasUnread(job) && job.id !== activeJobId) ? `<span class="unread-dot" title="New activity"></span>` : "";
     el.innerHTML = `
-      <div class="job-item-prompt">${escHtml(label)}</div>
+      <div class="job-item-prompt">${escHtml(label)}${unreadDot}</div>
       <div class="job-item-meta">
         ${queueBadge}
         <span class="badge badge-${job.state}">${formatState(job.state)}</span>
@@ -258,10 +274,16 @@ async function openJob(jobId) {
   emptyState.style.display = "none";
   setThinking(activeJob.state === "running", "Claude is working…");
 
-  document.querySelectorAll(".job-item").forEach(el =>
-    el.classList.toggle("active", el.dataset.id === jobId));
+  document.querySelectorAll(".job-item").forEach(el => {
+    el.classList.toggle("active", el.dataset.id === jobId);
+    if (el.dataset.id === jobId) {
+      const dot = el.querySelector(".unread-dot");
+      if (dot) dot.remove();
+    }
+  });
 
   openSse(jobId);
+  if (activeJob) markJobRead(jobId, activeJob.last_seq || 0);
 }
 
 function renderDetailPanel(job) {
@@ -469,6 +491,7 @@ function handleEvent(data) {
     if (_renderedSeqs.has(data.seq)) return;
     _renderedSeqs.add(data.seq);
     seqCount = Math.max(seqCount, data.seq);
+    markJobRead(jobId, data.seq);
   }
   statusSeq.textContent = `${seqCount} events`;
 

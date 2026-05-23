@@ -75,6 +75,14 @@ class Store:
             ).fetchall()
         return [Job.from_dict(json.loads(r["data"])) for r in rows]
 
+    def last_seq_by_job(self) -> dict[str, int]:
+        """Return {job_id: max_seq} for all jobs that have log entries."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT job_id, MAX(seq) as last_seq FROM logs GROUP BY job_id"
+            ).fetchall()
+        return {r["job_id"]: r["last_seq"] for r in rows}
+
     def list_jobs_by_state(self, state: JobState) -> list[Job]:
         with self._connect() as conn:
             rows = conn.execute(
