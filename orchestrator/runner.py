@@ -36,6 +36,7 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
+        limit=10 * 1024 * 1024,  # 10 MB — base64 images can exceed default 64 KB limit
     )
 
     # Start seq after whatever's already in the DB so seqs are monotonically increasing
@@ -62,6 +63,11 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         # Detect stop reason from result events
         if event_type == "result":
             stop_reason = classify_result_event(event)
+            # Accumulate token usage
+            usage = event.get("usage") or {}
+            job.input_tokens += int(usage.get("input_tokens", 0))
+            job.output_tokens += int(usage.get("output_tokens", 0))
+            store.save_job(job)
 
         # Fallback: scan raw line for limit patterns (runs on every line,
         # including assistant text blocks that precede the result event)
