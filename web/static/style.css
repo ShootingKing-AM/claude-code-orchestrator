@@ -709,12 +709,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 #sidebar.collapsed .logo { margin: 0 auto; }
 #sidebar.collapsed #sidebar-toggle { transform: rotate(180deg); }
 
-#sidebar-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .sidebar-header-text { flex: 1; }
 .sidebar-header-text h1 { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: 0.01em; }
 .sidebar-header-text span { font-size: 11px; color: var(--text-dim); }
