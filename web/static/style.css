@@ -609,3 +609,84 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+/* ── Attachment chips ─────────────────────────────────────────────── */
+
+.attachment-chips {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0 2px;
+}
+.attachment-chips.has-chips { display: flex; }
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 99px;
+  padding: 3px 10px 3px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attach-chip.uploading {
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-style: italic;
+}
+.attach-chip.error {
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(224, 90, 90, 0.08);
+}
+.attach-chip-icon { flex-shrink: 0; }
+.attach-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.attach-chip-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.attach-chip-remove:hover { color: var(--text); }
+
+/* Drag-over highlight */
+.drag-over {
+  border-color: var(--accent) !important;
+  background: rgba(212, 168, 67, 0.05) !important;
+}
+
+/* Paperclip button */
+.btn-attach {
+  background: none;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-attach:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+/* Msg bar inner layout to stack chips above the input row */
+#msg-bar-inner { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#msg-bar-row   { display: flex; align-items: center; gap: 8px; }
+#msg-bar-row #msg-input { flex: 1; }
