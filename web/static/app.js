@@ -653,6 +653,7 @@ function closeModal() {
   modalOverlay.classList.remove("open");
   promptInput.value = "";
   cwdInput.value = "";
+  modalAttachments.clear();
 }
 
 document.getElementById("modal-cancel").addEventListener("click", closeModal);
@@ -661,9 +662,13 @@ document.getElementById("modal-submit").addEventListener("click", submitJob);
 promptInput.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitJob(); });
 
 async function submitJob() {
-  const prompt = promptInput.value.trim();
-  if (!prompt) { promptInput.focus(); return; }
+  const rawPrompt = promptInput.value.trim();
+  if (!rawPrompt) { promptInput.focus(); return; }
   const working_dir = cwdInput.value.trim() || null;
+  const paths = modalAttachments.consumePaths();
+  const prompt = paths.length
+    ? rawPrompt + "\n\nAttached files:\n" + paths.map(p => "- " + p).join("\n")
+    : rawPrompt;
   closeModal();
   const res = await fetch("/api/jobs", {
     method: "POST",
@@ -678,7 +683,11 @@ async function submitJob() {
 // ── Message bar ───────────────────────────────────────────────────────────────
 
 async function sendMessage() {
-  const text = msgInput.value.trim();
+  const rawText = msgInput.value.trim();
+  const paths = msgAttachments.consumePaths();
+  const text = paths.length
+    ? rawText + "\n\nAttached files:\n" + paths.map(p => "- " + p).join("\n")
+    : rawText;
   if (!text || !activeJobId) return;
   msgSend.disabled = true;
   msgInput.disabled = true;
