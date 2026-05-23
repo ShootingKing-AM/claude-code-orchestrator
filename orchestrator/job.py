@@ -38,6 +38,9 @@ class Job:
     error: Optional[str] = None
     resume_count: int = 0
     working_dir: Optional[str] = None       # cwd passed to claude
+    title: Optional[str] = None             # user-editable display name
+    input_tokens: int = 0                   # cumulative across all runs
+    output_tokens: int = 0
 
     def transition(self, new_state: JobState) -> None:
         allowed = VALID_TRANSITIONS.get(self.state, set())
@@ -60,6 +63,9 @@ class Job:
             "error": self.error,
             "resume_count": self.resume_count,
             "working_dir": self.working_dir,
+            "title": self.title,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
         }
 
     @classmethod
@@ -72,4 +78,7 @@ class Job:
         j.error = d.get("error")
         j.resume_count = d.get("resume_count", 0)
         j.working_dir = d.get("working_dir")
+        j.title = d.get("title")
+        j.input_tokens = d.get("input_tokens", 0)
+        j.output_tokens = d.get("output_tokens", 0)
         return j

@@ -77,3 +77,39 @@ class TestJobStateMachine:
         assert loaded.session_id == job.session_id
         assert loaded.resume_count == job.resume_count
         assert loaded.working_dir == job.working_dir
+
+
+class TestJobTitleField:
+    def test_job_default_title_is_none(self):
+        j = Job(prompt="do something")
+        assert j.title is None
+
+    def test_job_title_roundtrips(self):
+        j = Job(prompt="do something", title="My custom title")
+        d = j.to_dict()
+        assert d["title"] == "My custom title"
+        j2 = Job.from_dict(d)
+        assert j2.title == "My custom title"
+
+    def test_job_title_missing_from_dict_defaults_none(self):
+        j = Job(prompt="p", id="x")
+        d = j.to_dict()
+        del d["title"]
+        j2 = Job.from_dict(d)
+        assert j2.title is None
+
+
+class TestJobTokenFields:
+    def test_job_token_fields_default_zero(self):
+        j = Job(prompt="p")
+        assert j.input_tokens == 0
+        assert j.output_tokens == 0
+
+    def test_job_token_fields_roundtrip(self):
+        j = Job(prompt="p")
+        j.input_tokens = 1234
+        j.output_tokens = 567
+        d = j.to_dict()
+        j2 = Job.from_dict(d)
+        assert j2.input_tokens == 1234
+        assert j2.output_tokens == 567
