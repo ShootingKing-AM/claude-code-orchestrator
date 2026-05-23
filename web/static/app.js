@@ -42,6 +42,30 @@ const msgInput            = document.getElementById("msg-input");
 const msgSend             = document.getElementById("msg-send");
 const thinkingIndicator   = document.getElementById("thinking-indicator");
 const thinkingLabel       = document.getElementById("thinking-label");
+const titleInput      = document.getElementById("title-input");
+const detailTitle     = document.getElementById("detail-title");
+const editTitleBtn    = document.getElementById("edit-title-btn");
+const editTitleInput  = document.getElementById("edit-title-input");
+const metaTokensWrap  = document.getElementById("meta-tokens-wrap");
+const metaTokens      = document.getElementById("meta-tokens");
+const statSpawned     = document.getElementById("stat-spawned");
+const statRunning     = document.getElementById("stat-running");
+const statInTok       = document.getElementById("stat-in-tok");
+const statOutTok      = document.getElementById("stat-out-tok");
+const sidebarToggle   = document.getElementById("sidebar-toggle");
+const sidebar         = document.getElementById("sidebar");
+
+// ── Sidebar collapse ──────────────────────────────────────────────────────────
+
+(function initSidebar() {
+  if (localStorage.getItem("sidebar-collapsed") === "1") {
+    sidebar.classList.add("collapsed");
+  }
+  sidebarToggle.addEventListener("click", () => {
+    const collapsed = sidebar.classList.toggle("collapsed");
+    localStorage.setItem("sidebar-collapsed", collapsed ? "1" : "0");
+  });
+})();
 
 // ── Attachments helper ────────────────────────────────────────────────────────
 
@@ -193,12 +217,12 @@ function renderJobList(jobs) {
     const el = document.createElement("div");
     el.className = "job-item" + (job.id === activeJobId ? " active" : "");
     el.dataset.id = job.id;
-    const prompt = job.prompt.length > 55 ? job.prompt.slice(0, 52) + "…" : job.prompt;
+    const label = job.title || (job.prompt.length > 55 ? job.prompt.slice(0, 52) + "…" : job.prompt);
     const ts = new Date(job.updated_at + "Z").toLocaleTimeString();
     const qpos = _queuePositions[job.id];
     const queueBadge = qpos ? `<span class="badge badge-queued queue-pos">#${qpos}</span>` : "";
     el.innerHTML = `
-      <div class="job-item-prompt">${escHtml(prompt)}</div>
+      <div class="job-item-prompt">${escHtml(label)}</div>
       <div class="job-item-meta">
         ${queueBadge}
         <span class="badge badge-${job.state}">${formatState(job.state)}</span>
@@ -244,6 +268,11 @@ function renderDetailPanel(job) {
   detailEmpty.style.display = "none";
   detailContent.style.display = "block";
 
+  // Title row
+  const displayTitle = job.title || (job.prompt.length > 60 ? job.prompt.slice(0, 57) + "…" : job.prompt);
+  detailTitle.textContent = displayTitle;
+  editTitleInput.value = job.title || "";
+
   detailPrompt.textContent = job.prompt;
   metaState.innerHTML = `<span class="badge badge-${job.state}">${formatState(job.state)}</span>`;
   metaId.textContent  = job.id.slice(0, 8) + "…";
@@ -260,6 +289,12 @@ function renderDetailPanel(job) {
   metaResumes.textContent       = job.resume_count;
   metaErrorWrap.style.display   = job.error        ? "flex" : "none";
   metaError.textContent         = job.error        || "";
+
+  const hasTokens = (job.input_tokens || 0) + (job.output_tokens || 0) > 0;
+  metaTokensWrap.style.display = hasTokens ? "flex" : "none";
+  metaTokens.textContent = hasTokens
+    ? `↑${fmtNum(job.input_tokens)} ↓${fmtNum(job.output_tokens)}`
+    : "";
 
   const canCancel = job.state === "running" || job.state === "queued";
   cancelBtn.classList.toggle("visible", canCancel);
@@ -290,6 +325,70 @@ function setThinking(active, label) {
 function fmtTime(iso) {
   return new Date(iso + "Z").toLocaleString();
 }
+
+function fmtNum(n) {
+  if (!n) return "0";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+// ── Inline title edit ─────────────────────────────────────────────────────────
+
+function _showTitleEdit() {
+  detailTitle.style.display = "none";
+  editTitleBtn.style.display = "none";
+  editTitleInput.style.display = "";
+  editTitleInput.focus();
+  editTitleInput.select();
+}
+
+function _hideTitleEdit() {
+  detailTitle.style.display = "";
+  editTitleBtn.style.display = "";
+  editTitleInput.style.display = "none";
+}
+
+async function _saveTitleEdit() {
+  if (!activeJobId) { _hideTitleEdit(); return; }
+  const newTitle = editTitleInput.value.trim() || null;
+  _hideTitleEdit();
+  const res = await fetch(`/api/jobs/${activeJobId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: newTitle }),
+  });
+  if (res.ok) {
+    const job = await res.json();
+    activeJob = job;
+    detailTitle.textContent = job.title || job.prompt.slice(0, 60);
+    loadJobList();
+  }
+}
+
+editTitleBtn.addEventListener("click", _showTitleEdit);
+editTitleInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); _saveTitleEdit(); }
+  if (e.key === "Escape") _hideTitleEdit();
+});
+editTitleInput.addEventListener("blur", _saveTitleEdit);
+
+// ── Stats polling ─────────────────────────────────────────────────────────────
+
+async function refreshStats() {
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) return;
+    const s = await res.json();
+    statSpawned.textContent = s.processes_spawned;
+    statRunning.textContent = s.jobs_running;
+    statInTok.textContent   = fmtNum(s.total_input_tokens);
+    statOutTok.textContent  = fmtNum(s.total_output_tokens);
+  } catch {}
+}
+
+refreshStats();
+setInterval(refreshStats, 5_000);
 
 // ── SSE streaming ─────────────────────────────────────────────────────────────
 
@@ -650,7 +749,11 @@ document.getElementById("new-job-btn").addEventListener("click", () => openModal
 
 function openModal(prefill) {
   modalOverlay.classList.add("open");
-  if (prefill) { promptInput.value = prefill.prompt || ""; cwdInput.value = prefill.working_dir || ""; }
+  if (prefill) {
+    promptInput.value = prefill.prompt || "";
+    cwdInput.value = prefill.working_dir || "";
+    if (titleInput) titleInput.value = prefill.title || "";
+  }
   promptInput.focus();
 }
 
@@ -658,7 +761,8 @@ function closeModal() {
   modalOverlay.classList.remove("open");
   promptInput.value = "";
   cwdInput.value = "";
-  modalAttachments.clear();
+  if (titleInput) titleInput.value = "";
+  if (typeof modalAttachments !== "undefined") modalAttachments.clear();
 }
 
 document.getElementById("modal-cancel").addEventListener("click", closeModal);
@@ -670,7 +774,8 @@ async function submitJob() {
   const rawPrompt = promptInput.value.trim();
   if (!rawPrompt) { promptInput.focus(); return; }
   const working_dir = cwdInput.value.trim() || null;
-  const paths = modalAttachments.consumePaths();
+  const title = titleInput ? titleInput.value.trim() || null : null;
+  const paths = (typeof modalAttachments !== "undefined") ? modalAttachments.consumePaths() : [];
   const prompt = paths.length
     ? rawPrompt + "\n\nAttached files:\n" + paths.map(p => "- " + p).join("\n")
     : rawPrompt;
@@ -678,7 +783,7 @@ async function submitJob() {
   const res = await fetch("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, working_dir }),
+    body: JSON.stringify({ prompt, working_dir, title }),
   });
   const job = await res.json();
   await loadJobList();
