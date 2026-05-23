@@ -97,8 +97,15 @@
 
     <!-- Message input bar (shown when job has an active session) -->
     <div id="msg-bar">
-      <input id="msg-input" type="text" placeholder="Send a message to Claude… (Enter to send)" autocomplete="off" />
-      <button id="msg-send">Send</button>
+      <div id="msg-bar-inner">
+        <div id="msg-chips" class="attachment-chips"></div>
+        <div id="msg-bar-row">
+          <input id="msg-input" type="text" placeholder="Send a message to Claude… (Enter to send)" autocomplete="off" />
+          <input type="file" id="msg-file-input" multiple style="display:none">
+          <button class="btn-attach" id="msg-attach" title="Attach files">📎</button>
+          <button id="msg-send">Send</button>
+        </div>
+      </div>
     </div>
 
     <!-- Status bar -->
@@ -119,13 +126,16 @@
     <h2>New Job</h2>
 
     <label for="prompt-input">Task prompt <span style="color:var(--text-muted)">(Ctrl+Enter to submit)</span></label>
+    <div id="modal-chips" class="attachment-chips"></div>
     <textarea id="prompt-input" placeholder="Describe the coding task for Claude Code…"></textarea>
+    <input type="file" id="modal-file-input" multiple style="display:none">
 
     <label for="cwd-input">Working directory <span style="color:var(--text-muted)">(optional, defaults to home)</span></label>
     <input type="text" id="cwd-input" placeholder="/home/user/myproject" />
 
     <div class="modal-actions">
       <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-ghost btn-attach" id="modal-attach" title="Attach files">📎</button>
       <button class="btn btn-primary" id="modal-submit">Start Job</button>
     </div>
   </div>
