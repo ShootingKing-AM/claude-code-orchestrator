@@ -169,6 +169,18 @@ async def upload_files(files: List[UploadFile] = File(default=[])):
     return results
 
 
+@app.get("/api/uploads/file")
+async def serve_upload(path: str):
+    """Serve a previously uploaded file by absolute path (must be under _UPLOADS_DIR)."""
+    from fastapi.responses import FileResponse
+    target = Path(path).resolve()
+    if not str(target).startswith(str(_UPLOADS_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(target)
+
+
 # ── SSE streaming ─────────────────────────────────────────────────────────────
 
 @app.get("/api/jobs/{job_id}/stream")

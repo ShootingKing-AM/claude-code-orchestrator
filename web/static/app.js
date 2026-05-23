@@ -512,6 +512,43 @@ function handleEvent(data) {
   if (node) { outputWrap.appendChild(node); scrollToBottom(); }
 }
 
+// ── User message text renderer ────────────────────────────────────────────────
+
+const _IMG_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
+
+function _renderUserMsgText(text) {
+  // Split on the "Attached files:" block if present
+  const attachedIdx = text.indexOf("\n\nAttached files:\n");
+  const mainText = attachedIdx === -1 ? text : text.slice(0, attachedIdx);
+  const attachedBlock = attachedIdx === -1 ? "" : text.slice(attachedIdx + "\n\nAttached files:\n".length);
+
+  let html = `<span class="user-msg-text">${escHtml(mainText)}</span>`;
+
+  if (attachedBlock) {
+    const paths = attachedBlock.split("\n").map(l => l.replace(/^- /, "").trim()).filter(Boolean);
+    const imgs = paths.filter(p => _IMG_EXTS.test(p));
+    const others = paths.filter(p => !_IMG_EXTS.test(p));
+
+    if (imgs.length) {
+      html += `<div class="user-msg-images">` +
+        imgs.map(p => {
+          const url = `/api/uploads/file?path=${encodeURIComponent(p)}`;
+          const name = p.split("/").pop();
+          return `<a href="${url}" target="_blank" title="${escHtml(name)}" class="user-msg-img-link">` +
+                 `<img src="${url}" alt="${escHtml(name)}" class="user-msg-img"></a>`;
+        }).join("") +
+        `</div>`;
+    }
+    if (others.length) {
+      html += `<div class="user-msg-attachments">` +
+        others.map(p => `<span class="attach-chip">📎 <span class="attach-chip-name">${escHtml(p.split("/").pop())}</span></span>`).join("") +
+        `</div>`;
+    }
+  }
+
+  return html;
+}
+
 // ── Event renderer ────────────────────────────────────────────────────────────
 
 function renderEvent(data, outerType) {
@@ -577,7 +614,8 @@ function renderEvent(data, outerType) {
       if (_pendingUserMsgs.has(text)) { _pendingUserMsgs.delete(text); return null; }
       const el = block("user_msg", ts);
       const queuedBadge = parsed.queued ? `<span class="user-msg-queued">queued</span>` : "";
-      el._content.innerHTML = `<span class="user-msg-label">You</span>${queuedBadge}<span class="user-msg-text">${escHtml(text)}</span>`;
+      const renderedText = _renderUserMsgText(text);
+      el._content.innerHTML = `<span class="user-msg-label">You</span>${queuedBadge}${renderedText}`;
       return el;
     }
 

@@ -800,3 +800,23 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   padding: 3px 8px;
   outline: none;
 }
+
+/* ── Inline images in user messages ──────────────────────────────────────── */
+.user-msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.user-msg-img-link { display: inline-block; }
+.user-msg-img {
+  max-width: 320px;
+  max-height: 240px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  display: block;
+}
+.user-msg-img:hover { opacity: 0.85; }
+.user-msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

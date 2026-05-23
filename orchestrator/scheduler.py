@@ -160,7 +160,16 @@ class Scheduler:
         return True
 
     def resume_paused_jobs(self) -> None:
-        """On startup, re-add paused jobs to the front of the queue."""
+        """On startup, re-add paused jobs to the front of the queue.
+        Any job stuck in RUNNING state means the server crashed mid-run — mark it FAILED.
+        """
+        # Mark orphaned RUNNING jobs as failed
+        for job in self._store.list_jobs_by_state(JobState.RUNNING):
+            log.warning("Job %s was RUNNING at startup (server restart?) — marking FAILED", job.id)
+            job.transition(JobState.FAILED)
+            job.error = "interrupted by server restart"
+            self._store.save_job(job)
+
         paused = self._store.list_jobs_by_state(JobState.PAUSED_DUE_TO_LIMIT)
         for job in reversed(paused):  # preserve order
             log.info("Re-queuing paused job %s on startup", job.id)
