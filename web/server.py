@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -38,11 +41,24 @@ async def broadcast(job_id: str, event: dict) -> None:
 
 scheduler = Scheduler(store=store, broadcast=broadcast)
 
+_UPLOADS_DIR = Path.home() / ".orch" / "uploads"
+_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cleanup_old_uploads() -> None:
+    cutoff = datetime.now() - timedelta(hours=24)
+    for subdir in _UPLOADS_DIR.iterdir():
+        if subdir.is_dir():
+            mtime = datetime.fromtimestamp(subdir.stat().st_mtime)
+            if mtime < cutoff:
+                shutil.rmtree(subdir, ignore_errors=True)
+
 
 @app.on_event("startup")
 async def _startup() -> None:
     logging.basicConfig(level=logging.INFO)
     scheduler.resume_paused_jobs()
+    _cleanup_old_uploads()
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -115,6 +131,19 @@ async def send_message(job_id: str, req: SendMessageRequest):
 @app.get("/api/jobs/{job_id}/logs")
 async def get_logs(job_id: str, after: int = -1):
     return store.get_logs(job_id, after_seq=after)
+
+
+@app.post("/api/upload")
+async def upload_files(files: List[UploadFile] = File(default=[])):
+    results = []
+    for file in files:
+        subdir = _UPLOADS_DIR / str(uuid.uuid4())
+        subdir.mkdir(parents=True)
+        dest = subdir / (file.filename or "upload")
+        with dest.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+        results.append({"name": file.filename or "upload", "path": str(dest)})
+    return results
 
 
 # ── SSE streaming ─────────────────────────────────────────────────────────────
