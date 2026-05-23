@@ -43,6 +43,7 @@ class Scheduler:
         self._msg_locks: dict[str, asyncio.Lock] = {}
         # Messages queued while a job is paused — drained and delivered on resume
         self._pending_msgs: dict[str, list[str]] = {}
+        self.processes_spawned: int = 0  # total claude subprocesses ever launched
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -78,6 +79,20 @@ class Scheduler:
     def queue_status(self) -> list[dict]:
         """Return ordered list of {job_id, position} for queued jobs."""
         return [{"job_id": jid, "position": i + 1} for i, jid in enumerate(self._queue)]
+
+    def stats(self) -> dict:
+        """Return live server statistics."""
+        all_jobs = self._store.list_jobs()
+        running = sum(1 for j in all_jobs if j.state.value == "running")
+        total_input = sum(j.input_tokens for j in all_jobs)
+        total_output = sum(j.output_tokens for j in all_jobs)
+        return {
+            "processes_spawned": self.processes_spawned,
+            "jobs_running": running,
+            "total_jobs": len(all_jobs),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+        }
 
     async def send_message(self, job_id: str, message: str) -> bool:
         """
@@ -193,6 +208,7 @@ class Scheduler:
                 await self._broadcast_state(job)
                 await self._broadcast_queue_update()
 
+                self.processes_spawned += 1
                 stop_reason = await run_job(job, self._store, self._broadcast)
                 await self._handle_stop(job, stop_reason)
 
@@ -277,6 +293,7 @@ class Scheduler:
         # Drain any messages the user sent while we were waiting
         pending = self._pending_msgs.pop(job.id, [])
 
+        self.processes_spawned += 1
         stop_reason = await run_job(job, self._store, self._broadcast)
 
         # Send each queued message in sequence after the resume run_job finishes

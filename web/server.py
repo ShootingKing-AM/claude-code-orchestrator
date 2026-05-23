@@ -77,11 +77,12 @@ async def root():
 class StartJobRequest(BaseModel):
     prompt: str
     working_dir: str | None = None
+    title: str | None = None
 
 
 @app.post("/api/jobs")
 async def start_job(req: StartJobRequest):
-    job = Job(prompt=req.prompt, working_dir=req.working_dir)
+    job = Job(prompt=req.prompt, working_dir=req.working_dir, title=req.title or None)
     scheduler.start_job(job)
     return job.to_dict()
 
@@ -99,6 +100,22 @@ async def get_job(job_id: str):
     return job.to_dict()
 
 
+class PatchJobRequest(BaseModel):
+    title: str | None = None
+
+
+@app.patch("/api/jobs/{job_id}")
+async def patch_job(job_id: str, req: PatchJobRequest):
+    job = store.load_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if req.title is not None:
+        job.title = req.title.strip() or None
+        job.updated_at = datetime.utcnow().isoformat()
+        store.save_job(job)
+    return job.to_dict()
+
+
 @app.delete("/api/jobs/{job_id}")
 async def cancel_job(job_id: str):
     job = store.load_job(job_id)
@@ -111,6 +128,11 @@ async def cancel_job(job_id: str):
 @app.get("/api/queue")
 async def get_queue():
     return scheduler.queue_status()
+
+
+@app.get("/api/stats")
+async def get_stats():
+    return scheduler.stats()
 
 
 class SendMessageRequest(BaseModel):
