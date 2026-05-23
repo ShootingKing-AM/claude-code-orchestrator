@@ -118,6 +118,8 @@ class Attachments {
             chipEl.classList.remove("uploading");
             const removeBtn = chipEl.querySelector(".attach-chip-remove");
             if (removeBtn) removeBtn.style.display = "";
+          } else {
+            throw new Error("empty");
           }
         })
         .catch(() => {
@@ -146,7 +148,6 @@ class Attachments {
         : `<span class="attach-chip-remove">✕</span>`}
     `;
     const removeBtn = chip.querySelector(".attach-chip-remove");
-    const item = { name, path: null, chipEl: chip };
     removeBtn.addEventListener("click", () => {
       const idx = this._items.findIndex(i => i.chipEl === chip);
       if (idx !== -1) this._items.splice(idx, 1);
