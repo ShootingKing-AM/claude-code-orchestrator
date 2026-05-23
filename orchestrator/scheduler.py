@@ -15,27 +15,34 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from .detector import StopReason
+from .detector import StopReason, parse_reset_time
 from .job import Job, JobState
 from .runner import run_job, send_message
 from .store import Store
 
 log = logging.getLogger(__name__)
 
-LIMIT_RETRY_SECONDS  = int(60 * 60)
-POLL_INTERVAL_SECONDS = int(5 * 60)
+LIMIT_RETRY_SECONDS   = int(60 * 60)
+POLL_INTERVAL_SECONDS = 60   # update countdown every minute
+_IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _to_ist(dt: datetime) -> datetime:
+    """Convert a UTC datetime to IST (UTC+5:30)."""
+    return dt + _IST_OFFSET
 
 
 class Scheduler:
     def __init__(self, store: Store, broadcast) -> None:
         self._store     = store
         self._broadcast = broadcast
-        # Ordered queue of job IDs waiting to run
         self._queue: list[str] = []
-        # Tasks for jobs that are actively running (including paused-waiting)
         self._running: dict[str, asyncio.Task] = {}
-        # Lock: only one job may call run_job() at a time
         self._run_lock = asyncio.Lock()
+        # Per-job lock prevents concurrent send_message calls on the same job
+        self._msg_locks: dict[str, asyncio.Lock] = {}
+        # Messages queued while a job is paused — drained and delivered on resume
+        self._pending_msgs: dict[str, list[str]] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -74,18 +81,67 @@ class Scheduler:
 
     async def send_message(self, job_id: str, message: str) -> bool:
         """
-        Send a follow-up message into a running Claude session.
-        Returns False if the job has no session yet or isn't in a state
-        where messaging makes sense.
+        Send a follow-up message into an existing Claude session.
+        - If job is PAUSED_DUE_TO_LIMIT: queues the message; it will be sent
+          automatically when the limit resets and the job resumes.
+        - If job is running: queues behind the current message lock.
+        - If job is terminal (completed/failed): reopens the session.
         """
         job = self._store.load_job(job_id)
         if not job or not job.session_id:
             return False
-        if job.state not in (JobState.RUNNING, JobState.COMPLETED, JobState.PAUSED_DUE_TO_LIMIT):
+
+        # If job is paused waiting for limit reset, queue the message for later
+        if job.state == JobState.PAUSED_DUE_TO_LIMIT:
+            self._pending_msgs.setdefault(job_id, []).append(message)
+            log.info("Job %s paused — queued message for when limit resets", job_id)
+            # Persist as user_msg so it shows in history immediately
+            from .runner import send_message as _runner_send_msg
+            from datetime import datetime as _dt
+            import json as _json
+            user_raw = _json.dumps({"type": "user_msg", "text": message, "ts": _dt.utcnow().isoformat(), "queued": True})
+            with self._store._connect() as conn:
+                last = conn.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM logs WHERE job_id=?", (job_id,)
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO logs(job_id, seq, event_type, raw) VALUES(?,?,?,?)",
+                    (job_id, last + 1, "user_msg", user_raw),
+                )
+            await self._broadcast(job_id, {"type": "user_msg", "text": message, "seq": last + 1, "queued": True})
+            await self._broadcast(job_id, {"type": "orch_status", "message": "Message queued — will send when limit resets"})
+            return True
+
+        # Ensure a per-job lock exists and acquire it to prevent concurrent messages
+        if job_id not in self._msg_locks:
+            self._msg_locks[job_id] = asyncio.Lock()
+        lock = self._msg_locks[job_id]
+        if lock.locked():
+            log.warning("Job %s already processing a message, dropping duplicate", job_id)
             return False
-        asyncio.ensure_future(
-            send_message(job, message, self._store, self._broadcast)
-        )
+
+        async def _do_send():
+            async with lock:
+                # Re-read job fresh inside the lock
+                j = self._store.load_job(job_id)
+                if not j or not j.session_id:
+                    return
+
+                was_terminal = j.is_terminal()
+                if was_terminal:
+                    # Bypass the state machine to re-open a finished job
+                    j.state = JobState.RUNNING
+                    j.updated_at = datetime.utcnow().isoformat()
+                    self._store.save_job(j)
+                    await self._broadcast_state(j)
+
+                stop = await send_message(j, message, self._store, self._broadcast)
+
+                if was_terminal:
+                    # Handle stop result and re-close the job
+                    await self._handle_stop(j, stop)
+
+        asyncio.ensure_future(_do_send())
         return True
 
     def resume_paused_jobs(self) -> None:
@@ -161,46 +217,78 @@ class Scheduler:
                 self._store.save_job(job)
                 await self._broadcast_state(job)
 
-    async def _handle_stop(self, job: Job, stop_reason: StopReason) -> None:
+    async def _handle_stop(self, job: Job, stop_reason: StopReason, last_result_text: str = "") -> None:
+        def _try_transition(new_state: JobState):
+            try:
+                job.transition(new_state)
+            except ValueError:
+                job.state = new_state
+                job.updated_at = datetime.utcnow().isoformat()
+
         if stop_reason == StopReason.COMPLETED:
-            job.transition(JobState.COMPLETED)
+            _try_transition(JobState.COMPLETED)
             self._store.save_job(job)
             await self._broadcast_state(job)
 
         elif stop_reason == StopReason.LIMIT_HIT:
-            job.transition(JobState.PAUSED_DUE_TO_LIMIT)
+            _try_transition(JobState.PAUSED_DUE_TO_LIMIT)
             self._store.save_job(job)
             await self._broadcast_state(job)
-            await self._wait_and_resume(job)
+            await self._wait_and_resume(job, last_result_text)
 
         else:
-            job.transition(JobState.FAILED)
+            _try_transition(JobState.FAILED)
             self._store.save_job(job)
             await self._broadcast_state(job)
 
-    async def _wait_and_resume(self, job: Job) -> None:
-        retry_at = datetime.utcnow() + timedelta(seconds=LIMIT_RETRY_SECONDS)
-        log.info("Job %s paused. Retrying at %s UTC", job.id, retry_at.strftime("%H:%M:%S"))
+    async def _wait_and_resume(self, job: Job, last_result_text: str = "") -> None:
+        # Try to parse exact reset time from the limit message
+        parsed_reset = parse_reset_time(last_result_text) if last_result_text else None
+        if parsed_reset and parsed_reset <= datetime.utcnow():
+            retry_at = datetime.utcnow()
+        elif parsed_reset:
+            retry_at = parsed_reset
+        else:
+            retry_at = datetime.utcnow() + timedelta(seconds=LIMIT_RETRY_SECONDS)
 
-        await self._broadcast(job.id, {
-            "type": "orch_status",
-            "message": f"Rate limit hit. Retrying at {retry_at.strftime('%H:%M:%S UTC')}",
-        })
+        retry_ist = _to_ist(retry_at)
+        log.info("Job %s paused. Retrying at %s IST", job.id, retry_ist.strftime("%H:%M:%S"))
+
+        remaining_secs = int((retry_at - datetime.utcnow()).total_seconds())
+        if remaining_secs > 0:
+            await self._broadcast(job.id, {
+                "type": "orch_status",
+                "message": f"Rate limit hit. Retrying at {retry_ist.strftime('%I:%M %p IST')} ({remaining_secs // 60}m)",
+            })
 
         while datetime.utcnow() < retry_at:
             remaining = int((retry_at - datetime.utcnow()).total_seconds())
             await self._broadcast(job.id, {
                 "type": "orch_status",
-                "message": f"Waiting for limit reset… {remaining // 60}m remaining",
+                "message": f"Waiting for limit reset… {remaining // 60}m {remaining % 60:02d}s remaining",
             })
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(min(POLL_INTERVAL_SECONDS, max(remaining, 1)))
 
         job.resume_count += 1
         job.transition(JobState.RUNNING)
         self._store.save_job(job)
         await self._broadcast_state(job)
 
+        # Drain any messages the user sent while we were waiting
+        pending = self._pending_msgs.pop(job.id, [])
+
         stop_reason = await run_job(job, self._store, self._broadcast)
+
+        # Send each queued message in sequence after the resume run_job finishes
+        for queued_msg in pending:
+            if stop_reason == StopReason.LIMIT_HIT:
+                # Hit limit again — re-queue remaining messages and wait
+                remaining_msgs = pending[pending.index(queued_msg):]
+                self._pending_msgs.setdefault(job.id, []).extend(remaining_msgs)
+                break
+            log.info("Job %s delivering queued message after resume", job.id)
+            stop_reason = await send_message(job, queued_msg, self._store, self._broadcast)
+
         await self._handle_stop(job, stop_reason)
 
     async def _broadcast_state(self, job: Job) -> None:

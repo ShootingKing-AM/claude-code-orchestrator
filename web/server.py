@@ -108,7 +108,7 @@ async def send_message(job_id: str, req: SendMessageRequest):
         raise HTTPException(status_code=404, detail="Job not found")
     sent = await scheduler.send_message(job_id, req.message)
     if not sent:
-        raise HTTPException(status_code=400, detail="Job has no active session or is not in a messageable state")
+        raise HTTPException(status_code=400, detail="Job has no session yet — cannot send a message before Claude starts")
     return {"sent": True}
 
 
@@ -138,20 +138,33 @@ async def stream_job(job_id: str, after: int = -1):
             for entry in store.get_logs(job_id, after_seq=after):
                 yield {"data": json.dumps(entry)}
 
-            # 2. Stream live events until job is terminal
-            while True:
-                job_now = store.load_job(job_id)
-                if job_now and job_now.is_terminal():
-                    # Drain any remaining queued events
-                    while not queue.empty():
-                        event = queue.get_nowait()
-                        yield {"data": json.dumps(event)}
-                    break
+            # If already terminal after replay, close immediately
+            job_now = store.load_job(job_id)
+            if job_now and job_now.is_terminal():
+                yield {"data": json.dumps({"type": "stream_end", "state": job_now.state.value})}
+                return
 
+            # 2. Stream live events; close when orch_state terminal arrives
+            while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5.0)
                     yield {"data": json.dumps(event)}
+
+                    # After delivering an orch_state terminal event, drain then close
+                    if event.get("type") == "orch_state" and event.get("state") in ("completed", "failed"):
+                        while not queue.empty():
+                            yield {"data": json.dumps(queue.get_nowait())}
+                        yield {"data": json.dumps({"type": "stream_end", "state": event["state"]})}
+                        break
+
                 except asyncio.TimeoutError:
+                    # Keep-alive ping + check terminal in case we missed the event
+                    job_now = store.load_job(job_id)
+                    if job_now and job_now.is_terminal():
+                        while not queue.empty():
+                            yield {"data": json.dumps(queue.get_nowait())}
+                        yield {"data": json.dumps({"type": "stream_end", "state": job_now.state.value})}
+                        break
                     yield {"data": json.dumps({"type": "ping"})}
 
         finally:

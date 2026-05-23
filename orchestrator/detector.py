@@ -3,27 +3,37 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
-# Patterns that indicate a usage/rate limit hit
+# Patterns that indicate a usage/rate limit hit — used only as fallback
+# on raw non-JSON lines or in error message fields.
+# Do NOT match generic words that appear in normal output (e.g. "resets").
 LIMIT_PATTERNS = [
-    re.compile(r"usage limit", re.IGNORECASE),
+    re.compile(r"usage.?limit", re.IGNORECASE),
+    re.compile(r"session.?limit", re.IGNORECASE),
     re.compile(r"rate.?limit", re.IGNORECASE),
     re.compile(r"quota exceeded", re.IGNORECASE),
-    re.compile(r"try again later", re.IGNORECASE),
     re.compile(r"too many requests", re.IGNORECASE),
-    re.compile(r"overloaded", re.IGNORECASE),
-    re.compile(r"capacity", re.IGNORECASE),
     re.compile(r"5.hour.limit", re.IGNORECASE),
     re.compile(r"daily.limit", re.IGNORECASE),
     re.compile(r"weekly.limit", re.IGNORECASE),
     re.compile(r"plan.limit", re.IGNORECASE),
-    re.compile(r"529", re.IGNORECASE),          # HTTP 529 overloaded
+    re.compile(r"HTTP 529", re.IGNORECASE),
 ]
+
+# Primary: these HTTP status codes in api_error_status always mean limit hit
+LIMIT_HTTP_CODES = {429, 529}
 
 COMPLETION_SUBTYPES = {"success"}
 ERROR_SUBTYPES = {"error_during_tool_use", "error"}
+
+# Match "resets H:MM" or "resets HH:MM" optionally followed by am/pm and timezone
+_RESET_TIME_RE = re.compile(
+    r"resets?\s+(\d{1,2}):(\d{2})\s*(am|pm)?",
+    re.IGNORECASE,
+)
 
 
 class StopReason(str, Enum):
@@ -37,31 +47,75 @@ def is_limit_message(text: str) -> bool:
     return any(p.search(text) for p in LIMIT_PATTERNS)
 
 
+def parse_reset_time(text: str) -> datetime | None:
+    """
+    Try to extract the reset time from a limit message like
+    "You've hit your session limit · resets 1:20pm (Asia/Kolkata)".
+    Returns a UTC datetime for when to retry, or None if unparseable.
+    """
+    m = _RESET_TIME_RE.search(text)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2))
+    meridiem = (m.group(3) or "").lower()
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    # Use local time for the reset (Claude reports in user's local timezone)
+    now_local = datetime.now()
+    reset_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset_local <= now_local:
+        # Reset time already passed today — already available
+        return datetime.utcnow()  # retry immediately
+    # Convert to UTC offset (approximate — use local→utc delta)
+    utc_offset = datetime.utcnow() - now_local
+    return reset_local + utc_offset
+
+
+def _extract_result_text(event: dict[str, Any]) -> str:
+    parts = []
+    result = event.get("result", "")
+    if isinstance(result, str):
+        parts.append(result)
+    content = event.get("content") or []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+    return " ".join(parts)
+
+
 def classify_result_event(event: dict[str, Any]) -> StopReason:
     """
     Classify a 'result' event from claude --output-format stream-json.
 
-    Expected shapes:
-      {"type": "result", "subtype": "success", ...}
-      {"type": "result", "subtype": "error_during_tool_use", "error": {...}}
+    Primary signal: api_error_status 429/529 → LIMIT_HIT
+    Secondary: error message text contains limit phrases → LIMIT_HIT
+    Otherwise: use subtype field.
     """
+    # Primary: HTTP error code is the most reliable signal
+    api_status = event.get("api_error_status")
+    if api_status in LIMIT_HTTP_CODES:
+        return StopReason.LIMIT_HIT
+
     subtype = event.get("subtype", "")
     error_info = event.get("error") or {}
     error_msg = ""
-
     if isinstance(error_info, dict):
         error_msg = error_info.get("message", "") or ""
     elif isinstance(error_info, str):
         error_msg = error_info
 
-    # Also check top-level message field
     top_msg = event.get("message", "") or ""
+
+    # Secondary: explicit limit phrases in error fields only (not result text,
+    # which can contain the word "limit" in normal conversation)
+    if is_limit_message(error_msg) or is_limit_message(top_msg):
+        return StopReason.LIMIT_HIT
 
     if subtype in COMPLETION_SUBTYPES:
         return StopReason.COMPLETED
-
-    if is_limit_message(error_msg) or is_limit_message(top_msg):
-        return StopReason.LIMIT_HIT
 
     if subtype in ERROR_SUBTYPES:
         return StopReason.FAILED
@@ -70,10 +124,7 @@ def classify_result_event(event: dict[str, Any]) -> StopReason:
 
 
 def classify_line(raw_line: str) -> StopReason | None:
-    """
-    Quick check on a raw text line (fallback for non-JSON output).
-    Returns None if the line is not a stop signal.
-    """
+    """Fallback scan of raw non-JSON lines for limit phrases."""
     if is_limit_message(raw_line):
         return StopReason.LIMIT_HIT
     return None

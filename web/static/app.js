@@ -6,8 +6,9 @@ let activeJobId = null;
 let activeJob   = null;
 let evtSource   = null;
 let seqCount    = 0;
-const _renderedSeqs   = new Set();  // dedup SSE events by seq on reconnect
-const _seenSessionIds = new Set();  // show each session ID only once
+const _renderedSeqs    = new Set();
+const _seenSessionIds  = new Set();
+const _pendingUserMsgs = new Set();
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 
@@ -36,10 +37,15 @@ const metaResumes     = document.getElementById("meta-resumes");
 const metaResumesWrap = document.getElementById("meta-resumes-wrap");
 const metaError       = document.getElementById("meta-error");
 const metaErrorWrap   = document.getElementById("meta-error-wrap");
+const msgBar              = document.getElementById("msg-bar");
+const msgInput            = document.getElementById("msg-input");
+const msgSend             = document.getElementById("msg-send");
+const thinkingIndicator   = document.getElementById("thinking-indicator");
+const thinkingLabel       = document.getElementById("thinking-label");
 
 // ── Job list ─────────────────────────────────────────────────────────────────
 
-let _queuePositions = {};  // job_id → position
+let _queuePositions = {};
 
 async function loadJobList() {
   const [jobsRes, queueRes] = await Promise.all([
@@ -56,19 +62,17 @@ async function loadJobList() {
 function renderJobList(jobs) {
   jobList.innerHTML = "";
   if (!jobs.length) {
-    jobList.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:12px;">No jobs yet.</div>';
+    jobList.innerHTML = '<div class="no-jobs">No jobs yet.</div>';
     return;
   }
   for (const job of jobs) {
     const el = document.createElement("div");
     el.className = "job-item" + (job.id === activeJobId ? " active" : "");
     el.dataset.id = job.id;
-    const prompt = job.prompt.length > 60 ? job.prompt.slice(0, 57) + "…" : job.prompt;
+    const prompt = job.prompt.length > 55 ? job.prompt.slice(0, 52) + "…" : job.prompt;
     const ts = new Date(job.updated_at + "Z").toLocaleTimeString();
     const qpos = _queuePositions[job.id];
-    const queueBadge = qpos
-      ? `<span class="badge badge-queued queue-pos">#${qpos} in queue</span>`
-      : "";
+    const queueBadge = qpos ? `<span class="badge badge-queued queue-pos">#${qpos}</span>` : "";
     el.innerHTML = `
       <div class="job-item-prompt">${escHtml(prompt)}</div>
       <div class="job-item-meta">
@@ -82,7 +86,8 @@ function renderJobList(jobs) {
 }
 
 function formatState(s) {
-  return s === "paused_due_to_limit" ? "rate limited" : s;
+  const map = { paused_due_to_limit: "limited", running: "running", completed: "done", failed: "failed", queued: "queued" };
+  return map[s] || s;
 }
 
 // ── Open a job ────────────────────────────────────────────────────────────────
@@ -92,18 +97,18 @@ async function openJob(jobId) {
   closeSse();
   activeJobId = jobId;
   seqCount = 0;
-  _renderedSeqs.clear();   // reset dedup set for new job
-  _seenSessionIds.clear(); // reset session dedup for new job
+  _renderedSeqs.clear();
+  _seenSessionIds.clear();
+  _pendingUserMsgs.clear();
 
   const res = await fetch(`/api/jobs/${jobId}`);
-  const job = await res.json();
-  activeJob = job;
+  activeJob = await res.json();
 
-  renderDetailPanel(job);
-  updateMsgBar(job);
+  renderDetailPanel(activeJob);
   outputWrap.innerHTML = "";
   outputWrap.classList.add("visible");
   emptyState.style.display = "none";
+  setThinking(activeJob.state === "running", "Claude is working…");
 
   document.querySelectorAll(".job-item").forEach(el =>
     el.classList.toggle("active", el.dataset.id === jobId));
@@ -122,19 +127,40 @@ function renderDetailPanel(job) {
   metaCreated.textContent = fmtTime(job.created_at);
   metaUpdated.textContent = fmtTime(job.updated_at);
 
-  metaCwdWrap.style.display     = job.working_dir  ? "flex" : "none";
-  metaCwd.textContent            = job.working_dir  || "";
-  metaSessionWrap.style.display  = job.session_id   ? "flex" : "none";
-  metaSession.textContent        = job.session_id   ? job.session_id.slice(0, 12) + "…" : "";
-  metaSession.title              = job.session_id   || "";
-  metaResumesWrap.style.display  = job.resume_count > 0 ? "flex" : "none";
-  metaResumes.textContent        = job.resume_count;
-  metaErrorWrap.style.display    = job.error        ? "flex" : "none";
-  metaError.textContent          = job.error        || "";
+  metaCwdWrap.style.display    = job.working_dir  ? "flex" : "none";
+  metaCwd.textContent           = job.working_dir  || "";
+  metaSessionWrap.style.display = job.session_id   ? "flex" : "none";
+  metaSession.textContent       = job.session_id   ? job.session_id.slice(0, 12) + "…" : "";
+  metaSession.title             = job.session_id   || "";
+  metaResumesWrap.style.display = job.resume_count > 0 ? "flex" : "none";
+  metaResumes.textContent       = job.resume_count;
+  metaErrorWrap.style.display   = job.error        ? "flex" : "none";
+  metaError.textContent         = job.error        || "";
 
   const canCancel = job.state === "running" || job.state === "queued";
   cancelBtn.classList.toggle("visible", canCancel);
   cancelBtn.textContent = job.state === "queued" ? "✕ Remove from queue" : "✕ Cancel";
+
+  updateMsgBar(job);
+}
+
+function updateMsgBar(job) {
+  const canMsg = job && !!job.session_id;
+  msgBar.classList.toggle("visible", !!canMsg);
+  if (msgInput) {
+    const finished = job && (job.state === "completed" || job.state === "failed");
+    msgInput.placeholder = finished ? "Continue this session… (Enter to send)" : "Send a message to Claude… (Enter to send)";
+  }
+}
+
+let _lastToolName = null;
+
+function setThinking(active, label) {
+  thinkingIndicator.classList.toggle("visible", !!active);
+  if (active && label) thinkingLabel.textContent = label;
+  else if (!active) thinkingLabel.textContent = "Claude is working…";
+  // Scroll to show indicator when it appears
+  if (active) thinkingIndicator.scrollIntoView({ block: "nearest" });
 }
 
 function fmtTime(iso) {
@@ -144,9 +170,10 @@ function fmtTime(iso) {
 // ── SSE streaming ─────────────────────────────────────────────────────────────
 
 let _sseReconnectTimer = null;
+let _streamDone = false;  // true once server sent stream_end for this job
 
 function openSse(jobId) {
-  // Pass after= so server only sends events we haven't seen yet
+  _streamDone = false;
   const url = `/api/jobs/${jobId}/stream?after=${seqCount}`;
   evtSource = new EventSource(url);
 
@@ -156,19 +183,26 @@ function openSse(jobId) {
     if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
   };
 
-  evtSource.onmessage = e => handleEvent(JSON.parse(e.data));
+  evtSource.onmessage = e => {
+    try { handleEvent(JSON.parse(e.data)); } catch {}
+  };
 
   evtSource.onerror = () => {
-    statusDot.className = "reconnecting";
-    statusText.textContent = "Reconnecting…";
-    // Close and manually reconnect after a delay, passing current seqCount
-    // so we don't replay already-seen events. EventSource auto-reconnects
-    // from the start so we manage reconnection ourselves.
     evtSource.close();
     evtSource = null;
+
+    // If stream_end was already received, or job is terminal: show Finished, no reconnect
+    if (_streamDone || (activeJob && isTerminal(activeJob.state))) {
+      statusDot.className = "";
+      statusText.textContent = "Finished";
+      return;
+    }
+
+    statusDot.className = "reconnecting";
+    statusText.textContent = "Reconnecting…";
     _sseReconnectTimer = setTimeout(() => {
       if (activeJobId === jobId) openSse(jobId);
-    }, 3000);
+    }, 2_000);
   };
 }
 
@@ -179,16 +213,36 @@ function closeSse() {
   statusText.textContent = "Disconnected";
 }
 
+function isTerminal(state) {
+  return state === "completed" || state === "failed";
+}
+
 // ── Event handling ────────────────────────────────────────────────────────────
 
-// (both Sets declared at top of file)
-
 function handleEvent(data) {
-  const type = data.type || "raw";
+  const type = data.type || data.event_type || "raw";
   if (type === "ping") return;
 
-  // Deduplicate — skip events we've already rendered
-  if (data.seq) {
+  // Server signals stream ended cleanly — no reconnect needed
+  if (type === "stream_end") {
+    _streamDone = true;
+    setThinking(false);
+    statusDot.className = "";
+    statusText.textContent = "Finished";
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
+    // Refresh job state in case we missed the final orch_state event
+    if (activeJobId) {
+      fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => {
+        activeJob = j;
+        renderDetailPanel(j);
+      });
+    }
+    return;
+  }
+
+  // Deduplicate by seq
+  if (data.seq != null) {
     if (_renderedSeqs.has(data.seq)) return;
     _renderedSeqs.add(data.seq);
     seqCount = Math.max(seqCount, data.seq);
@@ -197,19 +251,38 @@ function handleEvent(data) {
 
   if (type === "orch_state") {
     const state = data.state;
+    if (activeJob) activeJob.state = state;
     metaState.innerHTML = `<span class="badge badge-${state}">${formatState(state)}</span>`;
     const canCancel = state === "running" || state === "queued";
     cancelBtn.classList.toggle("visible", canCancel);
     cancelBtn.textContent = state === "queued" ? "✕ Remove from queue" : "✕ Cancel";
+    if (state === "running") {
+      statusText.textContent = "Claude is working…";
+      statusDot.className = "connected";
+      setThinking(true, "Claude is working…");
+    } else {
+      setThinking(false);
+      statusText.textContent = isTerminal(state) ? "Finished" : formatState(state);
+    }
     loadJobList();
-    if (activeJobId) fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => { activeJob = j; renderDetailPanel(j); updateMsgBar(j); });
+    if (activeJobId) fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => {
+      activeJob = j;
+      renderDetailPanel(j);
+    });
   }
 
   if (type === "orch_queue") {
-    // Update queue positions and refresh sidebar
     _queuePositions = {};
     for (const item of (data.queue || [])) _queuePositions[item.job_id] = item.position;
     loadJobList();
+  }
+
+  // Update thinking label when tool activity is seen
+  if (type === "tool_use" && activeJob && activeJob.state === "running") {
+    const name = data.name || (data.message?.content || []).find(p => p.type === "tool_use")?.name;
+    if (name) setThinking(true, `Running ${name}…`);
+  } else if ((type === "assistant" || type === "result") && activeJob && activeJob.state === "running") {
+    setThinking(true, "Claude is working…");
   }
 
   const node = renderEvent(data, type);
@@ -217,126 +290,116 @@ function handleEvent(data) {
 }
 
 // ── Event renderer ────────────────────────────────────────────────────────────
-// Returns a DOM node or null (null = silently skip this event).
 
-function renderEvent(data, type) {
-
-  // The SSE stream has two shapes:
-  //   LIVE:    {seq, type, raw, ...parsed_fields}  — from runner broadcast
-  //   REPLAY:  {seq, event_type, raw, ts}          — from store.get_logs()
-  // Normalise to a single `parsed` object with a reliable `type` field.
+function renderEvent(data, outerType) {
+  // Two stream shapes:
+  //   LIVE:   {seq, type, ts, raw, ...fields}   from runner broadcast
+  //   REPLAY: {seq, event_type, raw, ts}         from store.get_logs()
   let parsed = data;
   const rawLine = data.raw || "";
 
-  // Replay shape: event_type instead of type, raw is the original JSON line
   if (data.event_type && !data.type) {
-    try { parsed = { ...JSON.parse(rawLine), seq: data.seq }; } catch {
-      parsed = { type: data.event_type, raw: rawLine, seq: data.seq };
-    }
-  }
-
-  // If raw is a JSON string with more info than what's already in parsed, merge it
-  if (rawLine && rawLine.startsWith("{") && !parsed.message && !parsed.content) {
+    // Replay row — re-parse the raw JSON to get full event data
+    try { parsed = { ...JSON.parse(rawLine), seq: data.seq, ts: data.ts }; }
+    catch { parsed = { type: data.event_type, raw: rawLine, seq: data.seq, ts: data.ts }; }
+  } else if (rawLine && rawLine.startsWith("{")) {
+    // Live event — merge raw for any fields missing from sanitised broadcast
     try {
       const fromRaw = JSON.parse(rawLine);
-      parsed = { ...fromRaw, seq: data.seq };
+      parsed = { ...fromRaw, ...data };  // data wins (has seq/ts/type already set)
     } catch {}
   }
 
-  const evType = parsed.type || type;
+  const evType = parsed.type || outerType;
+  const ts = data.ts || parsed.ts || null;
 
   switch (evType) {
 
-    // ── Assistant text output ───────────────────────────────────────
     case "assistant": {
       const text = extractAssistantText(parsed);
       if (!text || !text.trim()) return null;
-      const el = makeBlock("assistant");
-      el.innerHTML = renderMarkdown(text);
+      const el = block("assistant", ts);
+      el._content.innerHTML = renderMarkdown(text);
       return el;
     }
 
-    // ── Tool calls ──────────────────────────────────────────────────
     case "tool_use": {
-      // May appear at top level OR nested inside an assistant message content array
       const uses = extractToolUses(parsed);
       if (!uses.length) return null;
-      const wrap = document.createDocumentFragment();
+      const frag = document.createDocumentFragment();
       for (const { name, input } of uses) {
-        const el = makeBlock("tool_use", "tool-block");
+        const el = block("tool_use", ts, "tool-block");
         const inputStr = formatToolInput(name, input);
-        el.innerHTML =
+        el._content.innerHTML =
           `<span class="tool-name">❯ ${escHtml(name)}</span>` +
           (inputStr ? `<span class="tool-input">${escHtml(inputStr)}</span>` : "");
-        wrap.appendChild(el);
+        frag.appendChild(el);
       }
-      return wrap;
+      return frag;
     }
 
-    // ── Tool results ────────────────────────────────────────────────
     case "tool_result": {
       const text = extractToolResultText(parsed);
       if (!text || !text.trim()) return null;
-      const el = makeBlock("tool_result", "tool-result-block");
-      el.innerHTML = `<span class="tool-result-label">◀ result</span><span class="tool-result-text">${escHtml(truncate(text, 500))}</span>`;
+      const el = block("tool_result", ts, "tool-result-block");
+      el._content.innerHTML = `<span class="tool-result-label">◀ result</span><span class="tool-result-text">${escHtml(truncate(text, 600))}</span>`;
       return el;
     }
 
-    // ── User echo (--verbose re-emits user messages) ─────────────────
-    // Skip these — they're just our own prompt echoed back.
     case "user":
       return null;
 
-    // ── Final result ─────────────────────────────────────────────────
+    case "user_msg": {
+      const text = parsed.text || "";
+      if (_pendingUserMsgs.has(text)) { _pendingUserMsgs.delete(text); return null; }
+      const el = block("user_msg", ts);
+      const queuedBadge = parsed.queued ? `<span class="user-msg-queued">queued</span>` : "";
+      el._content.innerHTML = `<span class="user-msg-label">You</span>${queuedBadge}<span class="user-msg-text">${escHtml(text)}</span>`;
+      return el;
+    }
+
     case "result": {
       const subtype = parsed.subtype || "";
       const ok = subtype === "success";
-      const el = makeBlock("result", "result-block");
-      const errorMsg = extractErrorMessage(parsed);
-      el.innerHTML =
+      const el = block("result", ts, "result-block");
+      const errMsg = extractErrorMessage(parsed);
+      el._content.innerHTML =
         `<span class="result-icon ${ok ? "result-ok" : "result-err"}">${ok ? "✓ Completed" : "✗ " + escHtml(subtype || "error")}</span>` +
-        (errorMsg ? `<span class="result-error-msg">${escHtml(errorMsg)}</span>` : "");
+        (errMsg ? `<span class="result-error-msg">${escHtml(errMsg)}</span>` : "");
       return el;
     }
 
-    // ── Orchestrator status (rate-limit countdown etc.) ──────────────
     case "orch_status": {
-      const el = makeBlock("orch_status", "orch-block");
-      el.innerHTML = `<span class="orch-label">⏳</span> ${escHtml(parsed.message || "")}`;
+      const el = block("orch_status", ts, "orch-block");
+      el._content.innerHTML = `<span class="orch-label">⏳</span> ${escHtml(parsed.message || "")}`;
       return el;
     }
 
-    // ── Orchestrator state transition ────────────────────────────────
     case "orch_state": {
-      const el = makeBlock("orch_state", "orch-block");
-      el.innerHTML = `<span class="orch-label">◈ state →</span> <span class="badge badge-${parsed.state}">${formatState(parsed.state)}</span>`;
+      const el = block("orch_state", ts, "orch-block");
+      el._content.innerHTML = `<span class="orch-label">◈</span> <span class="badge badge-${parsed.state}">${formatState(parsed.state)}</span>`;
       return el;
     }
 
-    // ── System / init: show session ID once only ─────────────────────
     case "system":
     case "init": {
       const sid = parsed.session_id || parsed.sessionId;
       if (!sid) return null;
-      if (_seenSessionIds.has(sid)) return null;   // suppress duplicates
+      if (_seenSessionIds.has(sid)) return null;
       _seenSessionIds.add(sid);
-      const el = makeBlock("system");
-      el.textContent = `⬡ session ${sid}`;
+      const el = block("system", ts);
+      el._content.textContent = `⬡ session ${sid}`;
       return el;
     }
 
-    // ── Raw non-JSON lines (e.g. plain-text error from claude) ───────
     case "raw": {
       const raw = (parsed.raw || rawLine || "").trim();
-      if (!raw) return null;
-      // JSON lines are re-parsed above and handled by their own type case
-      if (raw.startsWith("{") || raw.startsWith("[")) return null;
-      const el = makeBlock("raw");
-      el.textContent = raw;
+      if (!raw || raw.startsWith("{") || raw.startsWith("[")) return null;
+      const el = block("raw", ts);
+      el._content.textContent = raw;
       return el;
     }
 
-    // ── Everything else: silently drop ───────────────────────────────
     default:
       return null;
   }
@@ -345,46 +408,28 @@ function renderEvent(data, type) {
 // ── Extraction helpers ────────────────────────────────────────────────────────
 
 function extractAssistantText(ev) {
-  // Shape 1: ev.message.content = [{type:"text", text:"…"}]
   if (ev.message?.content) {
     const parts = Array.isArray(ev.message.content) ? ev.message.content : [];
     const text = parts.filter(p => p.type === "text").map(p => p.text).join("");
     if (text) return text;
   }
-  // Shape 2: direct text field
   if (typeof ev.text === "string") return ev.text;
   return "";
 }
 
 function extractToolUses(ev) {
-  const uses = [];
-  // Top-level tool_use
-  if (ev.type === "tool_use" && ev.name) {
-    uses.push({ name: ev.name, input: ev.input || {} });
-    return uses;
-  }
-  // Nested inside assistant message content
+  if (ev.type === "tool_use" && ev.name) return [{ name: ev.name, input: ev.input || {} }];
   if (ev.message?.content) {
-    for (const part of (Array.isArray(ev.message.content) ? ev.message.content : [])) {
-      if (part.type === "tool_use" && part.name) {
-        uses.push({ name: part.name, input: part.input || {} });
-      }
-    }
+    return (Array.isArray(ev.message.content) ? ev.message.content : [])
+      .filter(p => p.type === "tool_use" && p.name)
+      .map(p => ({ name: p.name, input: p.input || {} }));
   }
-  return uses;
+  return [];
 }
 
 function extractToolResultText(ev) {
   if (typeof ev.content === "string") return ev.content;
-  if (Array.isArray(ev.content)) {
-    return ev.content.filter(p => p.type === "text").map(p => p.text).join("\n");
-  }
-  // Sometimes nested in message
-  if (ev.message?.content) {
-    const parts = Array.isArray(ev.message.content) ? ev.message.content : [];
-    const res = parts.find(p => p.type === "tool_result");
-    if (res) return extractToolResultText(res);
-  }
+  if (Array.isArray(ev.content)) return ev.content.filter(p => p.type === "text").map(p => p.text).join("\n");
   return "";
 }
 
@@ -397,68 +442,75 @@ function extractErrorMessage(ev) {
 
 function formatToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
-  // Show the most meaningful single field per tool type
-  const val = input.command ?? input.file_path ?? input.path ??
-              input.content ?? input.query ?? input.url ?? null;
-  if (val !== null) return truncate(String(val), 300);
-  // Fallback: first key
+  const val = input.command ?? input.file_path ?? input.path ?? input.content ?? input.query ?? input.url ?? null;
+  if (val !== null) return truncate(String(val), 200);
   const keys = Object.keys(input);
-  if (keys.length) return truncate(`${keys[0]}: ${JSON.stringify(input[keys[0]])}`, 300);
+  if (keys.length) return truncate(`${keys[0]}: ${JSON.stringify(input[keys[0]])}`, 200);
   return "";
 }
 
-// ── Markdown-lite renderer ────────────────────────────────────────────────────
+// ── Markdown renderer ─────────────────────────────────────────────────────────
 
 function renderMarkdown(text) {
-  // Escape HTML first
   let s = escHtml(text);
-
-  // Fenced code blocks  ```lang\n...\n```
-  s = s.replace(/```(?:\w+)?\n([\s\S]*?)```/g,
-    (_, code) => `<pre class="code-block">${code}</pre>`);
-
-  // Inline code  `...`
-  s = s.replace(/`([^`\n]+)`/g,
-    (_, c) => `<code class="inline-code">${c}</code>`);
-
-  // Bold  **...**
+  s = s.replace(/```(?:\w+)?\n([\s\S]*?)```/g, (_, c) => `<pre class="code-block">${c}</pre>`);
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => `<code class="inline-code">${c}</code>`);
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-
-  // Italic  *...*  (not inside bold)
   s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>");
-
-  // Headers  ## Heading
-  s = s.replace(/^(#{1,3})\s+(.+)$/gm, (_, hashes, content) => {
-    const level = Math.min(hashes.length + 2, 6);  // h3–h5 in our context
-    return `<h${level} class="md-heading">${content}</h${level}>`;
-  });
-
-  // Bullet lists  - item  or  * item
+  s = s.replace(/^(#{1,3})\s+(.+)$/gm, (_, h, c) => `<h${Math.min(h.length + 2, 6)} class="md-heading">${c}</h${Math.min(h.length + 2, 6)}>`);
   s = s.replace(/^[ \t]*[-*]\s+(.+)$/gm, '<li class="md-li">$1</li>');
   s = s.replace(/(<li[\s\S]*?<\/li>)/g, '<ul class="md-ul">$1</ul>');
-
-  // Newlines → <br> (but not inside pre blocks)
   s = s.replace(/\n/g, "<br>");
-
   return s;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function makeBlock(type, ...extraClasses) {
+function block(type, ts, ...extra) {
   const el = document.createElement("div");
-  el.className = ["msg-block", `ev-${type}`, ...extraClasses].join(" ");
+  el.className = ["msg-block", `ev-${type}`, ...extra].join(" ");
+
+  // Timestamp on the left, always visible — full datetime in tooltip
+  const stamp = document.createElement("span");
+  stamp.className = "msg-ts";
+  stamp.textContent = ts ? fmtTs(ts) : "";
+  if (ts) stamp.title = fmtTsFull(ts);
+  el.appendChild(stamp);
+
+  // Content wrapper
+  const content = document.createElement("div");
+  content.className = "msg-content";
+  el.appendChild(content);
+  // Caller sets innerHTML/textContent on el — we intercept that below
+  // by storing a ref so renderEvent can fill content directly
+  el._content = content;
   return el;
+}
+
+function _tsToDate(ts) {
+  if (!ts) return null;
+  const s = String(ts);
+  const d = new Date(s.includes("T") && !s.endsWith("Z") ? s + "Z" : s);
+  return isNaN(d) ? null : d;
+}
+
+function fmtTs(ts) {
+  const d = _tsToDate(ts);
+  return d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+}
+
+function fmtTsFull(ts) {
+  const d = _tsToDate(ts);
+  return d ? d.toLocaleString([], {
+    weekday: "short", year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }) : "";
 }
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
 
 function escHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function scrollToBottom() { outputWrap.scrollTop = outputWrap.scrollHeight; }
@@ -501,40 +553,43 @@ async function submitJob() {
 
 // ── Message bar ───────────────────────────────────────────────────────────────
 
-const msgBar   = document.getElementById("msg-bar");
-const msgInput = document.getElementById("msg-input");
-const msgSend  = document.getElementById("msg-send");
-
-function updateMsgBar(job) {
-  const canMsg = job && job.session_id &&
-    ["running", "completed", "paused_due_to_limit"].includes(job.state);
-  msgBar.classList.toggle("visible", !!canMsg);
-}
-
 async function sendMessage() {
   const text = msgInput.value.trim();
   if (!text || !activeJobId) return;
   msgSend.disabled = true;
   msgInput.disabled = true;
 
-  // Show the user message in the output immediately
-  const el = makeBlock("user-msg");
-  el.innerHTML = `<span class="user-msg-label">You</span>${escHtml(text)}`;
+  // Render user bubble immediately
+  _pendingUserMsgs.add(text);
+  const isPaused = activeJob && activeJob.state === "paused_due_to_limit";
+  const el = block("user_msg", new Date().toISOString());
+  const qBadge = isPaused ? `<span class="user-msg-queued">queued</span>` : "";
+  el._content.innerHTML = `<span class="user-msg-label">You</span>${qBadge}<span class="user-msg-text">${escHtml(text)}</span>`;
   outputWrap.appendChild(el);
   scrollToBottom();
 
+  const jobId = activeJobId;
+
   try {
-    const res = await fetch(`/api/jobs/${activeJobId}/message`, {
+    // POST the message first — server sets job state back to running
+    const res = await fetch(`/api/jobs/${jobId}/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
     });
     if (!res.ok) {
-      const err = await res.json();
-      const errEl = makeBlock("raw");
-      errEl.textContent = "Error: " + (err.detail || "Failed to send");
+      const err = await res.json().catch(() => ({}));
+      const errEl = block("raw");
+      errEl.textContent = "✗ " + (err.detail || "Failed to send message");
       outputWrap.appendChild(errEl);
       scrollToBottom();
+    } else {
+      // Server has set state=running — show indicator immediately, then open SSE
+      setThinking(true, "Claude is working…");
+      if (!evtSource && activeJobId === jobId) {
+        _streamDone = false;
+        openSse(jobId);
+      }
     }
   } finally {
     msgInput.value = "";
@@ -553,7 +608,7 @@ cancelBtn.addEventListener("click", async () => {
   if (!activeJobId || !confirm("Cancel this job?")) return;
   await fetch(`/api/jobs/${activeJobId}`, { method: "DELETE" });
   loadJobList();
-  if (activeJobId) fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => renderDetailPanel(j));
+  fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => { activeJob = j; renderDetailPanel(j); });
 });
 
 // ── Retry button ──────────────────────────────────────────────────────────────
@@ -562,7 +617,7 @@ document.getElementById("retry-btn").addEventListener("click", () => {
   if (activeJob) openModal({ prompt: activeJob.prompt, working_dir: activeJob.working_dir });
 });
 
-// ── Auto-refresh job list ─────────────────────────────────────────────────────
+// ── Auto-refresh ──────────────────────────────────────────────────────────────
 
 setInterval(async () => {
   const res  = await fetch("/api/jobs");
@@ -572,7 +627,7 @@ setInterval(async () => {
     const job = jobs.find(j => j.id === activeJobId);
     if (job) { activeJob = job; metaUpdated.textContent = fmtTime(job.updated_at); }
   }
-}, 5000);
+}, 5_000);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadJobList();

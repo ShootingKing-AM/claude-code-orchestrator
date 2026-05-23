@@ -38,7 +38,11 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         cwd=cwd,
     )
 
-    seq = 0
+    # Start seq after whatever's already in the DB so seqs are monotonically increasing
+    with store._connect() as _conn:
+        seq = _conn.execute(
+            "SELECT COALESCE(MAX(seq),0) FROM logs WHERE job_id=?", (job.id,)
+        ).fetchone()[0]
     stop_reason = StopReason.UNKNOWN
 
     async for raw_line in _read_lines(proc):
@@ -59,11 +63,11 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         if event_type == "result":
             stop_reason = classify_result_event(event)
 
-        # Fallback: scan raw line for limit patterns
-        if stop_reason == StopReason.UNKNOWN:
-            fallback = classify_line(raw_line)
-            if fallback == StopReason.LIMIT_HIT:
-                stop_reason = StopReason.LIMIT_HIT
+        # Fallback: scan raw line for limit patterns (runs on every line,
+        # including assistant text blocks that precede the result event)
+        fallback = classify_line(raw_line)
+        if fallback == StopReason.LIMIT_HIT:
+            stop_reason = StopReason.LIMIT_HIT
 
         # Persist log line (full raw, including any binary data)
         store.append_log(job.id, seq, event_type, raw_line)
@@ -105,6 +109,22 @@ async def send_message(job: Job, message: str, store: Store, broadcast) -> StopR
     """Send an additional message into an existing Claude session."""
     if not job.session_id:
         raise ValueError("Job has no session_id — cannot send message before session starts")
+
+    # Persist the user's message so it shows up in history on replay
+    import json as _json
+    from datetime import datetime as _dt
+    user_raw = _json.dumps({"type": "user_msg", "text": message, "ts": _dt.utcnow().isoformat()})
+    # seq=-1 means "append after last" — use a large seq offset so it sorts after existing rows
+    with store._connect() as conn:
+        last = conn.execute(
+            "SELECT COALESCE(MAX(seq),0) FROM logs WHERE job_id=?", (job.id,)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO logs(job_id, seq, event_type, raw) VALUES(?,?,?,?)",
+            (job.id, last + 1, "user_msg", user_raw),
+        )
+    await broadcast(job.id, {"type": "user_msg", "text": message, "seq": last + 1})
+
     return await run_job(job, store, broadcast, message=message)
 
 
@@ -115,7 +135,8 @@ _MAX_FIELD_BYTES = 2000  # truncate any string field over this in broadcast
 
 def _sanitise_for_broadcast(event: dict, seq: int, raw_line: str) -> dict:
     """Return a copy of event safe to send over SSE (no large binary blobs)."""
-    out: dict = {"seq": seq, "type": event.get("type", "raw")}
+    from datetime import datetime as _dt
+    out: dict = {"seq": seq, "type": event.get("type", "raw"), "ts": _dt.utcnow().isoformat()}
     for k, v in event.items():
         if k in _BINARY_FIELDS and isinstance(v, str) and len(v) > _MAX_FIELD_BYTES:
             out[k] = v[:_MAX_FIELD_BYTES] + "…[truncated]"

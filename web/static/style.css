@@ -90,6 +90,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 #new-job-btn:hover { opacity: 0.85; }
 
 #job-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.no-jobs { padding: 16px; color: var(--text-muted); font-size: 12px; }
 
 .job-item {
   padding: 10px 14px;
@@ -323,113 +324,196 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 /* ── Message blocks ───────────────────────────────────────────────── */
 
 .msg-block {
-  margin-bottom: 1px;
+  margin-bottom: 2px;
   word-break: break-word;
   font-size: 13px;
   line-height: 1.65;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
 }
 
-/* Assistant text — plain readable prose */
-.ev-assistant {
+/* Left-side timestamp column — always visible, WhatsApp style */
+.msg-ts {
+  flex-shrink: 0;
+  width: 54px;
+  min-width: 54px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  padding-top: 3px;
+  padding-right: 8px;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+  opacity: 0.6;
+}
+.msg-block:hover .msg-ts { opacity: 1; }
+
+/* Custom tooltip on timestamp */
+.msg-ts[title] { cursor: default; position: relative; }
+.msg-ts[title]:hover::after {
+  content: attr(title);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  background: #1e1e1e;
+  border: 1px solid var(--border-light);
   color: var(--text);
-  padding: 4px 0;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 50;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+/* ── Typing / activity indicator ─────────────────────────────────────── */
+
+#thinking-indicator {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+#thinking-indicator.visible { display: flex; }
+
+.thinking-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinking-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+.thinking-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* Content wrapper takes the rest of the width */
+.msg-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Per-type content styles (applied to .msg-content inside each block) ── */
+
+/* Assistant text */
+.ev-assistant .msg-content {
+  color: var(--text);
+  padding: 3px 0;
   white-space: pre-wrap;
 }
 
-/* Tool call block */
-.tool-block {
+/* Tool call */
+.tool-block .msg-content {
   display: flex;
   align-items: baseline;
   gap: 10px;
   background: rgba(90, 212, 200, 0.05);
   border-left: 2px solid var(--cyan);
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: 0 4px 4px 0;
-  margin: 5px 0;
-  white-space: nowrap;
+  margin: 3px 0;
   overflow: hidden;
 }
-.tool-name {
-  color: var(--cyan);
-  font-weight: 600;
-  flex-shrink: 0;
-}
-.tool-input {
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.tool-name  { color: var(--cyan); font-weight: 600; flex-shrink: 0; }
+.tool-input { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Tool result block */
-.tool-result-block {
+/* Tool result */
+.tool-result-block .msg-content {
   background: rgba(155, 127, 212, 0.05);
   border-left: 2px solid var(--purple);
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: 0 4px 4px 0;
-  margin: 5px 0;
+  margin: 3px 0;
 }
-.tool-result-label {
-  color: var(--purple);
-  font-weight: 600;
-  margin-right: 8px;
-}
-.tool-result-text {
-  color: var(--text-dim);
-  white-space: pre-wrap;
-}
+.tool-result-label { color: var(--purple); font-weight: 600; margin-right: 8px; }
+.tool-result-text  { color: var(--text-dim); white-space: pre-wrap; }
 
-/* Orchestrator messages */
-.orch-block {
+/* Orchestrator status/state */
+.orch-block .msg-content {
   background: rgba(212, 168, 67, 0.07);
   border-left: 2px solid var(--yellow);
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: 0 4px 4px 0;
-  margin: 6px 0;
+  margin: 4px 0;
   color: var(--yellow);
 }
 .orch-label { font-weight: 600; margin-right: 6px; }
 
-/* Result / completion block */
-.result-block {
+/* Result / completion */
+.result-block .msg-content {
   border-top: 1px solid var(--border-light);
-  margin-top: 10px;
-  padding-top: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
 }
 .result-ok  { color: var(--green); font-weight: 600; }
 .result-err { color: var(--red);   font-weight: 600; }
 .result-error-msg { color: var(--red); font-size: 12px; white-space: pre-wrap; }
 
 /* System / session line */
-.ev-system {
+.ev-system .msg-content {
   color: var(--text-muted);
   font-size: 11px;
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
-/* User message bubble (sent from the web UI) */
-.ev-user-msg {
-  background: rgba(212, 168, 67, 0.07);
-  border-left: 2px solid var(--accent);
-  padding: 6px 10px;
-  border-radius: 0 4px 4px 0;
-  margin: 8px 0;
+/* User message bubble */
+.ev-user_msg .msg-content {
+  background: rgba(212, 168, 67, 0.08);
+  border-left: 3px solid var(--accent);
+  padding: 6px 12px;
+  border-radius: 0 6px 6px 0;
+  margin: 6px 0;
   color: var(--text);
-  white-space: pre-wrap;
 }
 .user-msg-label {
   color: var(--accent);
-  font-weight: 600;
-  font-size: 11px;
+  font-weight: 700;
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   margin-right: 10px;
 }
+.user-msg-queued {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--yellow);
+  background: rgba(212, 168, 67, 0.15);
+  border: 1px solid var(--accent-dim);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+.user-msg-text { white-space: pre-wrap; word-break: break-word; }
 
 /* Raw plain-text error lines */
-.ev-raw {
+.ev-raw .msg-content {
   color: var(--red);
   font-size: 12px;
   white-space: pre-wrap;
