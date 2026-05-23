@@ -139,7 +139,8 @@ async def upload_files(files: List[UploadFile] = File(default=[])):
     for file in files:
         subdir = _UPLOADS_DIR / str(uuid.uuid4())
         subdir.mkdir(parents=True)
-        dest = subdir / (file.filename or "upload")
+        safe_name = Path(file.filename or "upload").name
+        dest = subdir / safe_name
         with dest.open("wb") as f:
             shutil.copyfileobj(file.file, f)
         results.append({"name": file.filename or "upload", "path": str(dest)})
