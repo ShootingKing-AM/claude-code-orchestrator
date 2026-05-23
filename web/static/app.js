@@ -43,6 +43,129 @@ const msgSend             = document.getElementById("msg-send");
 const thinkingIndicator   = document.getElementById("thinking-indicator");
 const thinkingLabel       = document.getElementById("thinking-label");
 
+// ── Attachments helper ────────────────────────────────────────────────────────
+
+class Attachments {
+  constructor(chipsEl, inputEl, fileInputEl) {
+    this._chips = chipsEl;       // .attachment-chips container
+    this._input = inputEl;       // textarea or text input to highlight on drag
+    this._fileInput = fileInputEl; // hidden <input type="file">
+    this._items = [];            // [{ name, path, chipEl }]
+
+    this._input.addEventListener("dragover",  e => this._onDragOver(e));
+    this._input.addEventListener("dragleave", e => this._onDragLeave(e));
+    this._input.addEventListener("drop",      e => this._onDrop(e));
+    this._input.addEventListener("paste",     e => this._onPaste(e));
+    this._fileInput.addEventListener("change", e => this._onFileInput(e));
+  }
+
+  // Public: open native file picker
+  openPicker() { this._fileInput.value = ""; this._fileInput.click(); }
+
+  // Public: return paths to inject into prompt, then clear
+  consumePaths() {
+    const paths = this._items.filter(i => i.path).map(i => i.path);
+    this.clear();
+    return paths;
+  }
+
+  // Public: clear all chips and state
+  clear() {
+    this._items = [];
+    this._chips.innerHTML = "";
+    this._chips.classList.remove("has-chips");
+  }
+
+  _onDragOver(e) {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    this._input.classList.add("drag-over");
+  }
+
+  _onDragLeave(e) { this._input.classList.remove("drag-over"); }
+
+  _onDrop(e) {
+    e.preventDefault();
+    this._input.classList.remove("drag-over");
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) this._uploadFiles(files);
+  }
+
+  _onPaste(e) {
+    const files = Array.from(e.clipboardData.files || []);
+    if (files.length) { e.preventDefault(); this._uploadFiles(files); }
+  }
+
+  _onFileInput(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length) this._uploadFiles(files);
+  }
+
+  _uploadFiles(files) {
+    for (const file of files) {
+      const chipEl = this._addChip(file.name, "uploading");
+      const item = { name: file.name, path: null, chipEl };
+      this._items.push(item);
+
+      const fd = new FormData();
+      fd.append("files", file, file.name);
+
+      fetch("/api/upload", { method: "POST", body: fd })
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(results => {
+          if (results.length) {
+            item.path = results[0].path;
+            chipEl.classList.remove("uploading");
+            const removeBtn = chipEl.querySelector(".attach-chip-remove");
+            if (removeBtn) removeBtn.style.display = "";
+          }
+        })
+        .catch(() => {
+          item.path = null;
+          chipEl.classList.remove("uploading");
+          chipEl.classList.add("error");
+          chipEl.querySelector(".attach-chip-icon").textContent = "📎";
+          const nameEl = chipEl.querySelector(".attach-chip-name");
+          if (nameEl) nameEl.textContent = "upload failed";
+          setTimeout(() => {
+            this._removeChip(item);
+          }, 3000);
+        });
+    }
+  }
+
+  _addChip(name, state) {
+    const displayName = name.length > 30 ? name.slice(0, 27) + "…" : name;
+    const chip = document.createElement("span");
+    chip.className = "attach-chip" + (state === "uploading" ? " uploading" : "");
+    chip.innerHTML = `
+      <span class="attach-chip-icon">📎</span>
+      <span class="attach-chip-name" title="${escHtml(name)}">${escHtml(displayName)}</span>
+      ${state === "uploading"
+        ? `<span class="attach-chip-remove" style="display:none">✕</span>`
+        : `<span class="attach-chip-remove">✕</span>`}
+    `;
+    const removeBtn = chip.querySelector(".attach-chip-remove");
+    const item = { name, path: null, chipEl: chip };
+    removeBtn.addEventListener("click", () => {
+      const idx = this._items.findIndex(i => i.chipEl === chip);
+      if (idx !== -1) this._items.splice(idx, 1);
+      chip.remove();
+      if (!this._chips.children.length) this._chips.classList.remove("has-chips");
+    });
+    this._chips.appendChild(chip);
+    this._chips.classList.add("has-chips");
+    return chip;
+  }
+
+  _removeChip(item) {
+    const idx = this._items.indexOf(item);
+    if (idx !== -1) this._items.splice(idx, 1);
+    item.chipEl.remove();
+    if (!this._chips.children.length) this._chips.classList.remove("has-chips");
+  }
+}
+
 // ── Job list ─────────────────────────────────────────────────────────────────
 
 let _queuePositions = {};
@@ -630,4 +753,20 @@ setInterval(async () => {
 }, 5_000);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+
+const modalAttachments = new Attachments(
+  document.getElementById("modal-chips"),
+  document.getElementById("prompt-input"),
+  document.getElementById("modal-file-input")
+);
+
+const msgAttachments = new Attachments(
+  document.getElementById("msg-chips"),
+  document.getElementById("msg-input"),
+  document.getElementById("msg-file-input")
+);
+
+document.getElementById("modal-attach").addEventListener("click", () => modalAttachments.openPicker());
+document.getElementById("msg-attach").addEventListener("click", () => msgAttachments.openPicker());
+
 loadJobList();
