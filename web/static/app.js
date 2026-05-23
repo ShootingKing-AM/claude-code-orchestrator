@@ -491,7 +491,7 @@ function handleEvent(data) {
     if (_renderedSeqs.has(data.seq)) return;
     _renderedSeqs.add(data.seq);
     seqCount = Math.max(seqCount, data.seq);
-    markJobRead(jobId, data.seq);
+    markJobRead(activeJobId, data.seq);
   }
   statusSeq.textContent = `${seqCount} events`;
 
