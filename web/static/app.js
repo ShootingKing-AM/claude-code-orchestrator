@@ -510,6 +510,8 @@ function renderEvent(data, outerType) {
       const sid = parsed.session_id || parsed.sessionId;
       if (!sid) return null;
       if (_seenSessionIds.has(sid)) return null;
+      // Suppress resume system events — same session continuing, not a new session
+      if (activeJob && activeJob.session_id && sid !== activeJob.session_id) return null;
       _seenSessionIds.add(sid);
       const el = block("system", ts);
       el._content.textContent = `⬡ session ${sid}`;
@@ -598,7 +600,7 @@ function block(type, ts, ...extra) {
   const stamp = document.createElement("span");
   stamp.className = "msg-ts";
   stamp.textContent = ts ? fmtTs(ts) : "";
-  if (ts) stamp.title = fmtTsFull(ts);
+  if (ts) stamp.dataset.fullts = fmtTsFull(ts);
   el.appendChild(stamp);
 
   // Content wrapper
@@ -613,8 +615,11 @@ function block(type, ts, ...extra) {
 
 function _tsToDate(ts) {
   if (!ts) return null;
-  const s = String(ts);
-  const d = new Date(s.includes("T") && !s.endsWith("Z") ? s + "Z" : s);
+  let s = String(ts);
+  // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" (space, no Z) — normalise to ISO UTC
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) s = s.replace(" ", "T") + "Z";
+  else if (s.includes("T") && !s.endsWith("Z")) s += "Z";
+  const d = new Date(s);
   return isNaN(d) ? null : d;
 }
 

@@ -351,9 +351,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .msg-block:hover .msg-ts { opacity: 1; }
 
 /* Custom tooltip on timestamp */
-.msg-ts[title] { cursor: default; position: relative; }
-.msg-ts[title]:hover::after {
-  content: attr(title);
+.msg-ts[data-fullts] { cursor: default; position: relative; }
+.msg-ts[data-fullts]:hover::after {
+  content: attr(data-fullts);
   position: absolute;
   left: 0;
   top: calc(100% + 4px);
