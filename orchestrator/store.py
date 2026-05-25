@@ -83,6 +83,14 @@ class Store:
             ).fetchall()
         return {r["job_id"]: r["last_seq"] for r in rows}
 
+    def user_msg_count_by_job(self) -> dict[str, int]:
+        """Return {job_id: count} of user_msg log entries per job."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT job_id, COUNT(*) as cnt FROM logs WHERE event_type='user_msg' GROUP BY job_id"
+            ).fetchall()
+        return {r["job_id"]: r["cnt"] for r in rows}
+
     def list_jobs_by_state(self, state: JobState) -> list[Job]:
         with self._connect() as conn:
             rows = conn.execute(

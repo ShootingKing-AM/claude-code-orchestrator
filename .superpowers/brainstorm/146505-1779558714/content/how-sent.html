@@ -1,0 +1,26 @@
+<h2>How should attached files reach Claude?</h2>
+<p class="subtitle">The orchestrator runs Claude as a CLI subprocess. Files need to get into Claude's context somehow.</p>
+
+<div class="options">
+  <div class="option" data-choice="save-path" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Save to disk, pass the path</h3>
+      <p>Server saves the uploaded file to a temp directory, then injects its path into the prompt text — e.g. "See attached file at /tmp/abc/screenshot.png". Simple and works for any file type.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="inline-base64" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Inline base64 in prompt</h3>
+      <p>File content is base64-encoded and embedded directly in the message text. Works without disk I/O but balloons prompt size for large files.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="claude-api" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Claude's native file/image API</h3>
+      <p>Pass images as vision content blocks and files via the Files API. Most capable but requires switching from CLI to direct API calls for jobs with attachments.</p>
+    </div>
+  </div>
+</div>

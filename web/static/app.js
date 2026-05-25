@@ -63,6 +63,8 @@ const editTitleBtn    = document.getElementById("edit-title-btn");
 const editTitleInput  = document.getElementById("edit-title-input");
 const metaTokensWrap  = document.getElementById("meta-tokens-wrap");
 const metaTokens      = document.getElementById("meta-tokens");
+const metaMsgsWrap    = document.getElementById("meta-msgs-wrap");
+const metaMsgs        = document.getElementById("meta-msgs");
 const statSpawned     = document.getElementById("stat-spawned");
 const statRunning     = document.getElementById("stat-running");
 const statInTok       = document.getElementById("stat-in-tok");
@@ -237,10 +239,14 @@ function renderJobList(jobs) {
     const qpos = _queuePositions[job.id];
     const queueBadge = qpos ? `<span class="badge badge-queued queue-pos">#${qpos}</span>` : "";
     const unreadDot = (hasUnread(job) && job.id !== activeJobId) ? `<span class="unread-dot" title="New activity"></span>` : "";
+    const msgCount = job.user_msg_count || 0;
+    const msgBadge = msgCount >= 10
+      ? `<span class="msg-count-badge ${msgCount >= 15 ? "msg-count-danger" : msgCount >= 12 ? "msg-count-warn" : ""}" title="${msgCount} messages sent">${msgCount}/15</span>`
+      : "";
     el.innerHTML = `
       <div class="job-item-prompt">${escHtml(label)}${unreadDot}</div>
       <div class="job-item-meta">
-        ${queueBadge}
+        ${queueBadge}${msgBadge}
         <span class="badge badge-${job.state}">${formatState(job.state)}</span>
         <span class="job-item-time">${ts}</span>
       </div>`;
@@ -317,6 +323,11 @@ function renderDetailPanel(job) {
   metaTokens.textContent = hasTokens
     ? `↑${fmtNum(job.input_tokens)} ↓${fmtNum(job.output_tokens)}`
     : "";
+
+  const msgCount = job.user_msg_count || 0;
+  metaMsgsWrap.style.display = msgCount > 0 ? "flex" : "none";
+  metaMsgs.textContent = `${msgCount} / 15`;
+  metaMsgs.className = msgCount >= 15 ? "meta-msgs-danger" : msgCount >= 12 ? "meta-msgs-warn" : "";
 
   const canCancel = job.state === "running" || job.state === "queued";
   cancelBtn.classList.toggle("visible", canCancel);

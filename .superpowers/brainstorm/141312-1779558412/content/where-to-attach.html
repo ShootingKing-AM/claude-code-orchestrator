@@ -1,0 +1,26 @@
+<h2>Where should file/image attachment live?</h2>
+<p class="subtitle">The orchestrator has two places where you type text. Which one should support paste & drag-drop?</p>
+
+<div class="options">
+  <div class="option" data-choice="msgbar" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Message bar only</h3>
+      <p>The chat input at the bottom of an open job — for sending images/files as part of a running conversation with Claude.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="modal" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>New Job modal only</h3>
+      <p>Attach files when creating a new job — so the initial prompt can include reference images or documents.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="both" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Both places</h3>
+      <p>Paste/drag into the New Job modal AND into the message bar — full attachment support everywhere you type.</p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,26 @@
+<h2>How should attachments appear in the UI?</h2>
+<p class="subtitle">After you paste or drop a file, what should you see before sending?</p>
+
+<div class="options">
+  <div class="option" data-choice="chips" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Filename chips above the input</h3>
+      <p>Small removable tags (e.g. "📎 screenshot.png ✕") appear above the text box. Clean, compact, familiar from email clients.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="preview" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Thumbnail preview for images, chip for others</h3>
+      <p>Images show a small inline thumbnail; non-image files show a filename chip. More visual feedback for screenshots.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="inline" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Inject path into text automatically</h3>
+      <p>No separate attachment UI — the file path is just appended to the text input directly. Minimal, but less easy to remove.</p>
+    </div>
+  </div>
+</div>

@@ -833,3 +833,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   flex-shrink: 0;
   box-shadow: 0 0 4px var(--accent);
 }
+
+/* ── Message count badge ─────────────────────────────────────────────────── */
+.msg-count-badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 1px 5px;
+  border-radius: 99px;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+}
+.msg-count-warn,  .meta-msgs-warn  { color: var(--accent) !important; border-color: var(--accent-dim) !important; }
+.msg-count-danger,.meta-msgs-danger { color: var(--red)    !important; border-color: var(--red)        !important; }

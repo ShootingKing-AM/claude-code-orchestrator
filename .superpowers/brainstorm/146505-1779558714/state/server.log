@@ -1,0 +1,11 @@
+{"type":"server-started","port":58309,"host":"0.0.0.0","url_host":"localhost","url":"http://localhost:58309","screen_dir":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content","state_dir":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/state"}
+{"type":"screen-added","file":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content/where-to-attach.html"}
+{"source":"user-event","type":"click","text":"A\n    \n      Message bar only\n      The chat input at the bottom of an open job — for sending images/files as part of a running conversation with Claude.","choice":"msgbar","id":null,"timestamp":1779558776080}
+{"source":"user-event","type":"click","text":"C\n    \n      Both places\n      Paste/drag into the New Job modal AND into the message bar — full attachment support everywhere you type.","choice":"both","id":null,"timestamp":1779558789314}
+{"type":"screen-added","file":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content/file-types.html"}
+{"source":"user-event","type":"click","text":"C\n    \n      Any file (base64)\n      PDFs, ZIPs, binaries — encoded and passed to Claude. Useful but bulky for large files.","choice":"any","id":null,"timestamp":1779558836106}
+{"type":"screen-added","file":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content/how-sent.html"}
+{"type":"screen-added","file":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content/attachment-ui.html"}
+{"source":"user-event","type":"click","text":"A\n    \n      Filename chips above the input\n      Small removable tags (e.g. \"📎 screenshot.png ✕\") appear above the text box. Clean, compact, familiar from email clients.","choice":"chips","id":null,"timestamp":1779558946191}
+{"type":"screen-added","file":"/home/sk/Documents/orch/.superpowers/brainstorm/146505-1779558714/content/waiting.html"}
+{"type":"server-stopped","reason":"idle timeout"}

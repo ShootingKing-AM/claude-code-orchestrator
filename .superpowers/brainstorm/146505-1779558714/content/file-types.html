@@ -1,0 +1,26 @@
+<h2>What should be attachable?</h2>
+<p class="subtitle">Which types of files do you want to be able to paste or drag in?</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="images" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Images</h3>
+      <p>Screenshots, diagrams, mockups — PNG, JPG, GIF, WebP. Claude can read and reason about image content.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="text" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Text / code files</h3>
+      <p>.txt, .md, .py, .js, etc. — pasted as readable text into the message.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="any" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Any file (base64)</h3>
+      <p>PDFs, ZIPs, binaries — encoded and passed to Claude. Useful but bulky for large files.</p>
+    </div>
+  </div>
+</div>
