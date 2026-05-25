@@ -76,13 +76,16 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
             job.total_cost_usd += float(event.get("total_cost_usd", 0.0))
             store.save_job(job)
 
-        # Fallback: scan raw line for limit patterns (runs on every line,
-        # including assistant text blocks that precede the result event)
-        fallback = classify_line(raw_line)
-        if fallback == StopReason.LIMIT_HIT:
-            stop_reason = StopReason.LIMIT_HIT
-            if not last_result_text:
-                last_result_text = raw_line  # raw line may contain "resets HH:MM"
+        # Fallback: scan raw non-JSON lines for limit phrases.
+        # Skip structured events (result/assistant/etc.) — their content may
+        # contain the word "rate limit" in normal discussion, causing false positives.
+        # Also never downgrade a COMPLETED result from a structured result event.
+        if event_type == "raw" and stop_reason != StopReason.COMPLETED:
+            fallback = classify_line(raw_line)
+            if fallback == StopReason.LIMIT_HIT:
+                stop_reason = StopReason.LIMIT_HIT
+                if not last_result_text:
+                    last_result_text = raw_line  # raw line may contain "resets HH:MM"
 
         # Persist log line (full raw, including any binary data)
         store.append_log(job.id, seq, event_type, raw_line)
