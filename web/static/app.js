@@ -240,7 +240,7 @@ function renderJobList(jobs) {
     const queueBadge = qpos ? `<span class="badge badge-queued queue-pos">#${qpos}</span>` : "";
     const unreadDot = (hasUnread(job) && job.id !== activeJobId) ? `<span class="unread-dot" title="New activity"></span>` : "";
     const msgCount = job.user_msg_count || 0;
-    const msgBadge = msgCount >= 10
+    const msgBadge = msgCount > 0
       ? `<span class="msg-count-badge ${msgCount >= 15 ? "msg-count-danger" : msgCount >= 12 ? "msg-count-warn" : ""}" title="${msgCount} messages sent">${msgCount}/15</span>`
       : "";
     el.innerHTML = `
