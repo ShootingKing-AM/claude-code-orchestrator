@@ -86,12 +86,22 @@ class Scheduler:
         running = sum(1 for j in all_jobs if j.state.value == "running")
         total_input = sum(j.input_tokens for j in all_jobs)
         total_output = sum(j.output_tokens for j in all_jobs)
+        total_cache_read = sum(j.cache_read_tokens for j in all_jobs)
+        total_cache_creation = sum(j.cache_creation_tokens for j in all_jobs)
+        total_ctx = total_input + total_cache_read + total_cache_creation
+        cache_hit_rate = round(total_cache_read / total_ctx, 4) if total_ctx > 0 else 0.0
+        total_cost = round(sum(j.total_cost_usd for j in all_jobs), 4)
         return {
             "processes_spawned": self.processes_spawned,
             "jobs_running": running,
             "total_jobs": len(all_jobs),
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_creation_tokens": total_cache_creation,
+            "total_context_tokens": total_ctx,
+            "cache_hit_rate": cache_hit_rate,
+            "total_cost_usd": total_cost,
         }
 
     async def send_message(self, job_id: str, message: str) -> bool:
@@ -218,8 +228,8 @@ class Scheduler:
                 await self._broadcast_queue_update()
 
                 self.processes_spawned += 1
-                stop_reason = await run_job(job, self._store, self._broadcast)
-                await self._handle_stop(job, stop_reason)
+                stop_reason, last_result_text = await run_job(job, self._store, self._broadcast)
+                await self._handle_stop(job, stop_reason, last_result_text)
 
             except asyncio.CancelledError:
                 log.info("Job %s was cancelled", job.id)
@@ -270,10 +280,13 @@ class Scheduler:
         # Try to parse exact reset time from the limit message
         parsed_reset = parse_reset_time(last_result_text) if last_result_text else None
         if parsed_reset and parsed_reset <= datetime.utcnow():
+            # Reset time already passed — resume immediately
             retry_at = datetime.utcnow()
         elif parsed_reset:
             retry_at = parsed_reset
         else:
+            # No reset time available (e.g. server restarted) — use fallback ceiling,
+            # but cap at LIMIT_RETRY_SECONDS from now so we don't overshoot badly
             retry_at = datetime.utcnow() + timedelta(seconds=LIMIT_RETRY_SECONDS)
 
         retry_ist = _to_ist(retry_at)
@@ -303,7 +316,7 @@ class Scheduler:
         pending = self._pending_msgs.pop(job.id, [])
 
         self.processes_spawned += 1
-        stop_reason = await run_job(job, self._store, self._broadcast)
+        stop_reason, last_result_text = await run_job(job, self._store, self._broadcast)
 
         # Send each queued message in sequence after the resume run_job finishes
         for queued_msg in pending:
@@ -315,7 +328,7 @@ class Scheduler:
             log.info("Job %s delivering queued message after resume", job.id)
             stop_reason = await send_message(job, queued_msg, self._store, self._broadcast)
 
-        await self._handle_stop(job, stop_reason)
+        await self._handle_stop(job, stop_reason, last_result_text)
 
     async def _broadcast_state(self, job: Job) -> None:
         await self._broadcast(job.id, {"type": "orch_state", "state": job.state.value})

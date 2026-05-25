@@ -44,7 +44,7 @@ class TestQueue:
         job = Job(prompt="test")
 
         with patch("orchestrator.scheduler.run_job", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = StopReason.COMPLETED
+            mock_run.return_value = (StopReason.COMPLETED, "")
             scheduler.enqueue_job(job)
             await asyncio.sleep(0.05)
 
@@ -65,7 +65,7 @@ class TestQueue:
             if job.id == job1.id:
                 first_started.set()
                 await first_release.wait()
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             scheduler.enqueue_job(job1)
@@ -99,7 +99,7 @@ class TestQueue:
             if job.id == job1.id:
                 started.set()
                 await release.wait()
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             scheduler.enqueue_job(job1)
@@ -130,7 +130,7 @@ class TestQueue:
             if job.id == job1.id:
                 started.set()
                 await release.wait()
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             scheduler.enqueue_job(job1)
@@ -161,7 +161,7 @@ class TestQueue:
                 await release.wait()
             else:
                 completed.set()
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             scheduler.enqueue_job(job1)
@@ -186,9 +186,9 @@ class TestLimitHandling:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return StopReason.LIMIT_HIT
+                return StopReason.LIMIT_HIT, ""
             resumed.set()
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             with patch("orchestrator.scheduler.LIMIT_RETRY_SECONDS", 0):
@@ -205,7 +205,7 @@ class TestLimitHandling:
         job = Job(prompt="test")
 
         async def fake_run(job, *args, **kwargs):
-            return StopReason.FAILED
+            return StopReason.FAILED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             scheduler.enqueue_job(job)
@@ -225,7 +225,7 @@ class TestBroadcast:
         job = Job(prompt="test")
 
         async def fake_run(job, *args, **kwargs):
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             sched.enqueue_job(job)
@@ -247,7 +247,7 @@ class TestBroadcast:
         async def fake_run(job, *args, **kwargs):
             started.set()
             await asyncio.sleep(10)
-            return StopReason.COMPLETED
+            return StopReason.COMPLETED, ""
 
         with patch("orchestrator.scheduler.run_job", side_effect=fake_run):
             sched.enqueue_job(job)

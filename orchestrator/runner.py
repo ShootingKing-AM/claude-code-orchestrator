@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 _READ_TIMEOUT = 0.1
 
 
-async def run_job(job: Job, store: Store, broadcast, message: str | None = None) -> StopReason:
+async def run_job(job: Job, store: Store, broadcast, message: str | None = None) -> tuple[StopReason, str]:
     """
     Spawn `claude` for the given job, stream events to the store and broadcast
     callback, and return the final StopReason.
@@ -45,6 +45,7 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
             "SELECT COALESCE(MAX(seq),0) FROM logs WHERE job_id=?", (job.id,)
         ).fetchone()[0]
     stop_reason = StopReason.UNKNOWN
+    last_result_text = ""  # text from the result event — used to parse reset time
 
     async for raw_line in _read_lines(proc):
         seq += 1
@@ -63,10 +64,16 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         # Detect stop reason from result events
         if event_type == "result":
             stop_reason = classify_result_event(event)
-            # Accumulate token usage
+            # Capture full result text so the scheduler can parse the reset time
+            result_val = event.get("result", "")
+            last_result_text = result_val if isinstance(result_val, str) else ""
+            # Accumulate token usage (including prompt cache stats)
             usage = event.get("usage") or {}
             job.input_tokens += int(usage.get("input_tokens", 0))
             job.output_tokens += int(usage.get("output_tokens", 0))
+            job.cache_read_tokens += int(usage.get("cache_read_input_tokens", 0))
+            job.cache_creation_tokens += int(usage.get("cache_creation_input_tokens", 0))
+            job.total_cost_usd += float(event.get("total_cost_usd", 0.0))
             store.save_job(job)
 
         # Fallback: scan raw line for limit patterns (runs on every line,
@@ -74,6 +81,8 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
         fallback = classify_line(raw_line)
         if fallback == StopReason.LIMIT_HIT:
             stop_reason = StopReason.LIMIT_HIT
+            if not last_result_text:
+                last_result_text = raw_line  # raw line may contain "resets HH:MM"
 
         # Persist log line (full raw, including any binary data)
         store.append_log(job.id, seq, event_type, raw_line)
@@ -93,7 +102,7 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
             stop_reason = StopReason.COMPLETED
 
     log.info("Job %s finished with stop_reason=%s rc=%s", job.id, stop_reason, proc.returncode)
-    return stop_reason
+    return stop_reason, last_result_text
 
 
 def _build_command(job: Job, message: str | None = None) -> list[str]:
@@ -131,7 +140,8 @@ async def send_message(job: Job, message: str, store: Store, broadcast) -> StopR
         )
     await broadcast(job.id, {"type": "user_msg", "text": message, "seq": last + 1})
 
-    return await run_job(job, store, broadcast, message=message)
+    stop_reason, _ = await run_job(job, store, broadcast, message=message)
+    return stop_reason
 
 
 # Fields that may contain large base64 blobs — strip before broadcasting
