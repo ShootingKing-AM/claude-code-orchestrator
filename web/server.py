@@ -59,6 +59,10 @@ async def _startup() -> None:
     logging.basicConfig(level=logging.INFO)
     scheduler.resume_paused_jobs()
     _cleanup_old_uploads()
+    # Explicitly drain now that we're in the running event loop.
+    # resume_paused_jobs() only populates _queue; we must kick _drain from
+    # an async context so _lifecycle tasks are properly scheduled.
+    await scheduler._drain()
 
 
 # ── Static files ──────────────────────────────────────────────────────────────
@@ -74,15 +78,28 @@ async def root():
 
 # ── REST API ──────────────────────────────────────────────────────────────────
 
+_VALID_EFFORT = {"low", "medium", "high", "xhigh", "max"}
+
 class StartJobRequest(BaseModel):
     prompt: str
     working_dir: str | None = None
     title: str | None = None
+    model: str | None = None
+    max_turns: int | None = None
+    effort: str | None = None
 
 
 @app.post("/api/jobs")
 async def start_job(req: StartJobRequest):
-    job = Job(prompt=req.prompt, working_dir=req.working_dir, title=req.title or None)
+    effort = req.effort if req.effort in _VALID_EFFORT else None
+    job = Job(
+        prompt=req.prompt,
+        working_dir=req.working_dir,
+        title=req.title or None,
+        model=req.model or None,
+        max_turns=req.max_turns or None,
+        effort=effort,
+    )
     scheduler.start_job(job)
     return job.to_dict()
 
@@ -111,6 +128,9 @@ async def get_job(job_id: str):
 
 class PatchJobRequest(BaseModel):
     title: str | None = None
+    model: str | None = None
+    max_turns: int | None = None
+    effort: str | None = None
 
 
 @app.patch("/api/jobs/{job_id}")
@@ -118,8 +138,20 @@ async def patch_job(job_id: str, req: PatchJobRequest):
     job = store.load_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    changed = False
     if req.title is not None:
         job.title = req.title.strip() or None
+        changed = True
+    if req.model is not None:
+        job.model = req.model or None
+        changed = True
+    if req.max_turns is not None:
+        job.max_turns = req.max_turns or None
+        changed = True
+    if req.effort is not None:
+        job.effort = req.effort if req.effort in _VALID_EFFORT else None
+        changed = True
+    if changed:
         job.updated_at = datetime.utcnow().isoformat()
         store.save_job(job)
     return job.to_dict()
@@ -134,6 +166,17 @@ async def cancel_job(job_id: str):
     return {"cancelled": cancelled}
 
 
+@app.post("/api/jobs/{job_id}/force-resume")
+async def force_resume_job(job_id: str):
+    job = store.load_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    ok = scheduler.force_resume(job_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Job is not waiting on a limit — nothing to resume")
+    return {"force_resumed": True}
+
+
 @app.get("/api/queue")
 async def get_queue():
     return scheduler.queue_status()
@@ -142,6 +185,174 @@ async def get_queue():
 @app.get("/api/stats")
 async def get_stats():
     return scheduler.stats()
+
+
+@app.get("/api/usage-window")
+async def get_usage_window():
+    """
+    Rolling-window token consumption.
+    Returns per-hour buckets for the last 24 hours, plus totals for 1h, 5h, 24h.
+    Also returns last limit-hit events with reset times from error result events.
+    """
+    from datetime import datetime as _dt
+    import sqlite3 as _sql
+
+    now = _dt.utcnow()
+
+    with store._connect() as conn:
+        # All result events in the last 24 hours
+        cutoff24 = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            "SELECT ts, raw FROM logs WHERE event_type='result' AND ts >= ? ORDER BY ts ASC",
+            (cutoff24,),
+        ).fetchall()
+
+    buckets: dict[str, dict] = {}  # hour_str -> {ctx, output, cost, calls}
+    limit_hits = []
+    window_totals = {1: {"ctx": 0, "output": 0, "cost": 0, "calls": 0},
+                     5: {"ctx": 0, "output": 0, "cost": 0, "calls": 0},
+                     24:{"ctx": 0, "output": 0, "cost": 0, "calls": 0}}
+
+    for ts_str, raw in rows:
+        try:
+            ts = _dt.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        try:
+            event = json.loads(raw)
+        except Exception:
+            continue
+
+        usage = event.get("usage") or {}
+        ctx = (int(usage.get("input_tokens", 0))
+               + int(usage.get("cache_read_input_tokens", 0))
+               + int(usage.get("cache_creation_input_tokens", 0)))
+        out  = int(usage.get("output_tokens", 0))
+        cost = float(event.get("total_cost_usd", 0))
+
+        # Hour bucket (UTC)
+        hour_key = ts.strftime("%Y-%m-%dT%H:00")
+        b = buckets.setdefault(hour_key, {"ctx": 0, "output": 0, "cost": 0.0, "calls": 0})
+        b["ctx"]    += ctx
+        b["output"] += out
+        b["cost"]   += cost
+        b["calls"]  += 1
+
+        # Rolling window totals
+        age_hours = (now - ts).total_seconds() / 3600
+        for window in (1, 5, 24):
+            if age_hours <= window:
+                window_totals[window]["ctx"]    += ctx
+                window_totals[window]["output"] += out
+                window_totals[window]["cost"]   += cost
+                window_totals[window]["calls"]  += 1
+
+        # Detect limit-hit events
+        if event.get("api_error_status") == 429 or "session limit" in str(event.get("result", "")).lower():
+            limit_hits.append({
+                "ts": ts_str,
+                "result_text": event.get("result", ""),
+                "ctx": ctx,
+            })
+
+    # Build sorted list of hourly buckets for the last 24h (fill missing hours with zeros)
+    hours_list = []
+    for h in range(23, -1, -1):
+        hour_dt = now - timedelta(hours=h)
+        key = hour_dt.strftime("%Y-%m-%dT%H:00")
+        b = buckets.get(key, {"ctx": 0, "output": 0, "cost": 0.0, "calls": 0})
+        hours_list.append({
+            "hour": key,
+            "label": hour_dt.strftime("%H:00"),
+            "ctx": b["ctx"],
+            "output": b["output"],
+            "cost": round(b["cost"], 4),
+            "calls": b["calls"],
+        })
+
+    for window in window_totals:
+        window_totals[window]["cost"] = round(window_totals[window]["cost"], 4)
+
+    return {
+        "now_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hours": hours_list,
+        "windows": {
+            "1h":  window_totals[1],
+            "5h":  window_totals[5],
+            "24h": window_totals[24],
+        },
+        "limit_hits": limit_hits[-5:],  # last 5 limit events
+    }
+
+
+@app.get("/api/token-efficiency")
+async def get_token_efficiency():
+    """Per-job token breakdown with cache efficiency and burn rate.
+
+    NOTE: In Claude's API, `input_tokens` = only uncached tokens (usually very small).
+    Total context = input_tokens + cache_creation_input_tokens + cache_read_input_tokens.
+    Rate limits are based on total context, not just input_tokens.
+    Cache hit rate = cache_read / total_context.
+    """
+    jobs = store.list_jobs()
+    rows = []
+    for j in jobs:
+        uncached   = j.input_tokens
+        cache_read = j.cache_read_tokens
+        cache_write= j.cache_creation_tokens
+        # Total context processed (what actually counts toward rate limits)
+        total_ctx  = uncached + cache_read + cache_write
+        cache_hit_rate = round(cache_read / total_ctx, 4) if total_ctx > 0 else 0.0
+
+        duration_mins = None
+        burn_rate = None
+        try:
+            from datetime import datetime as _dt
+            created = _dt.fromisoformat(j.created_at)
+            updated = _dt.fromisoformat(j.updated_at)
+            duration_mins = round((updated - created).total_seconds() / 60, 1)
+            total_tokens = total_ctx + j.output_tokens
+            if duration_mins > 0 and total_tokens > 0:
+                burn_rate = round(total_tokens / duration_mins)
+        except Exception:
+            pass
+
+        rows.append({
+            "id": j.id,
+            "title": j.title or j.prompt[:50],
+            "state": j.state.value,
+            "uncached_input_tokens": uncached,
+            "output_tokens": j.output_tokens,
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": cache_write,
+            "total_context_tokens": total_ctx,
+            "cache_hit_rate": cache_hit_rate,
+            "total_cost_usd": round(j.total_cost_usd, 4),
+            "resume_count": j.resume_count,
+            "duration_mins": duration_mins,
+            "burn_rate_per_min": burn_rate,
+        })
+
+    total_uncached     = sum(j.input_tokens for j in jobs)
+    total_out          = sum(j.output_tokens for j in jobs)
+    total_cache_read   = sum(j.cache_read_tokens for j in jobs)
+    total_cache_write  = sum(j.cache_creation_tokens for j in jobs)
+    total_ctx_all      = total_uncached + total_cache_read + total_cache_write
+    overall_cache_hit  = round(total_cache_read / total_ctx_all, 4) if total_ctx_all > 0 else 0.0
+    total_cost         = round(sum(j.total_cost_usd for j in jobs), 4)
+
+    return {
+        "jobs": rows,
+        "totals": {
+            "uncached_input_tokens": total_uncached,
+            "output_tokens": total_out,
+            "cache_read_tokens": total_cache_read,
+            "cache_creation_tokens": total_cache_write,
+            "total_context_tokens": total_ctx_all,
+            "overall_cache_hit_rate": overall_cache_hit,
+            "total_cost_usd": total_cost,
+        },
+    }
 
 
 class SendMessageRequest(BaseModel):

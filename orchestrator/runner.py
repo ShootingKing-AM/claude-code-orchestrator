@@ -116,6 +116,12 @@ def _build_command(job: Job, message: str | None = None) -> list[str]:
         "--print",
         "--dangerously-skip-permissions",
     ]
+    if job.model:
+        cmd += ["--model", job.model]
+    if job.max_turns is not None:
+        cmd += ["--max-turns", str(job.max_turns)]
+    if job.effort:
+        cmd += ["--effort", job.effort]
     if job.session_id:
         cmd += ["--resume", job.session_id, message or "continue"]
     else:

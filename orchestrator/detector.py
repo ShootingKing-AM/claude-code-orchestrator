@@ -47,11 +47,30 @@ def is_limit_message(text: str) -> bool:
     return any(p.search(text) for p in LIMIT_PATTERNS)
 
 
+def parse_reset_time_from_event(event: dict) -> datetime | None:
+    """
+    Extract reset time from a rate_limit_event's resetsAt unix timestamp.
+    This is unambiguous UTC — prefer over text parsing whenever available.
+    """
+    info = event.get("rate_limit_info") or {}
+    resets_at = info.get("resetsAt")
+    if resets_at:
+        try:
+            return datetime.utcfromtimestamp(int(resets_at))
+        except (ValueError, TypeError, OSError):
+            pass
+    return None
+
+
 def parse_reset_time(text: str) -> datetime | None:
     """
-    Try to extract the reset time from a limit message like
+    Extract reset time from a limit message like
     "You've hit your session limit · resets 1:20pm (Asia/Kolkata)".
-    Returns a UTC datetime for when to retry, or None if unparseable.
+
+    IMPORTANT: Claude reports the time in the user's LOCAL timezone (e.g. IST),
+    not the server's local time. We treat the time as IST (UTC+5:30) regardless
+    of the server's timezone so the math is always correct.
+    Returns a UTC datetime, or None if unparseable.
     """
     m = _RESET_TIME_RE.search(text)
     if not m:
@@ -62,15 +81,19 @@ def parse_reset_time(text: str) -> datetime | None:
         hour += 12
     elif meridiem == "am" and hour == 12:
         hour = 0
-    # Use local time for the reset (Claude reports in user's local timezone)
-    now_local = datetime.now()
-    reset_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if reset_local <= now_local:
-        # Reset time already passed today — already available
-        return datetime.utcnow()  # retry immediately
-    # Convert to UTC offset (approximate — use local→utc delta)
-    utc_offset = datetime.utcnow() - now_local
-    return reset_local + utc_offset
+    _IST = timedelta(hours=5, minutes=30)
+    now_utc = datetime.utcnow()
+    now_ist = now_utc + _IST
+    reset_ist = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset_ist <= now_ist:
+        # Reset time already passed today — resume immediately
+        return now_utc
+    # Claude rate limits reset within ~1 hour. If the parsed time is more than
+    # 2 hours away it means the limit message is from a previous session/day and
+    # the reset already happened — resume immediately rather than waiting ~22h.
+    if (reset_ist - now_ist) > timedelta(hours=2):
+        return now_utc
+    return reset_ist - _IST  # convert back to UTC
 
 
 def _extract_result_text(event: dict[str, Any]) -> str:

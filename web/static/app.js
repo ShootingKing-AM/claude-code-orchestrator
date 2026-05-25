@@ -31,6 +31,7 @@ const jobList         = document.getElementById("job-list");
 const outputWrap      = document.getElementById("output-wrap");
 const emptyState      = document.getElementById("empty-state");
 const cancelBtn       = document.getElementById("cancel-btn");
+const forceResumeBtn  = document.getElementById("force-resume-btn");
 const statusDot       = document.getElementById("status-dot");
 const statusText      = document.getElementById("status-text");
 const statusSeq       = document.getElementById("status-seq");
@@ -243,10 +244,14 @@ function renderJobList(jobs) {
     const msgBadge = msgCount > 0
       ? `<span class="msg-count-badge ${msgCount >= 15 ? "msg-count-danger" : msgCount >= 12 ? "msg-count-warn" : ""}" title="${msgCount} messages sent">${msgCount}/15</span>`
       : "";
+    const jobCtx = (job.input_tokens || 0) + (job.cache_read_tokens || 0) + (job.cache_creation_tokens || 0);
+    const ctxBadge = jobCtx >= 500_000
+      ? `<span class="ctx-badge ${jobCtx >= 1_500_000 ? 'ctx-badge-danger' : 'ctx-badge-warn'}" title="Context size: ${fmtNum(jobCtx)} tokens — large context burns limits fast">ctx ${fmtNum(jobCtx)}</span>`
+      : "";
     el.innerHTML = `
       <div class="job-item-prompt">${escHtml(label)}${unreadDot}</div>
       <div class="job-item-meta">
-        ${queueBadge}${msgBadge}
+        ${queueBadge}${ctxBadge}${msgBadge}
         <span class="badge badge-${job.state}">${formatState(job.state)}</span>
         <span class="job-item-time">${ts}</span>
       </div>`;
@@ -308,6 +313,11 @@ function renderDetailPanel(job) {
   metaCreated.textContent = fmtTime(job.created_at);
   metaUpdated.textContent = fmtTime(job.updated_at);
 
+  const effortSelect = document.getElementById("meta-effort-select");
+  const modelSelect  = document.getElementById("meta-model-select");
+  if (effortSelect) effortSelect.value = job.effort || "";
+  if (modelSelect)  modelSelect.value  = job.model  || "";
+
   metaCwdWrap.style.display    = job.working_dir  ? "flex" : "none";
   metaCwd.textContent           = job.working_dir  || "";
   metaSessionWrap.style.display = job.session_id   ? "flex" : "none";
@@ -318,11 +328,15 @@ function renderDetailPanel(job) {
   metaErrorWrap.style.display   = job.error        ? "flex" : "none";
   metaError.textContent         = job.error        || "";
 
-  const hasTokens = (job.input_tokens || 0) + (job.output_tokens || 0) > 0;
+  const cacheRead = job.cache_read_tokens || 0;
+  const cacheWrite = job.cache_creation_tokens || 0;
+  const totalCtx = (job.input_tokens || 0) + cacheRead + cacheWrite;
+  const hasTokens = totalCtx > 0 || (job.output_tokens || 0) > 0;
   metaTokensWrap.style.display = hasTokens ? "flex" : "none";
-  metaTokens.textContent = hasTokens
-    ? `↑${fmtNum(job.input_tokens)} ↓${fmtNum(job.output_tokens)}`
-    : "";
+  if (hasTokens) {
+    const costPart = job.total_cost_usd > 0 ? ` · $${job.total_cost_usd.toFixed(3)}` : "";
+    metaTokens.textContent = `ctx ${fmtNum(totalCtx)} · out ${fmtNum(job.output_tokens || 0)}${costPart}`;
+  }
 
   const msgCount = job.user_msg_count || 0;
   metaMsgsWrap.style.display = msgCount > 0 ? "flex" : "none";
@@ -333,7 +347,65 @@ function renderDetailPanel(job) {
   cancelBtn.classList.toggle("visible", canCancel);
   cancelBtn.textContent = job.state === "queued" ? "✕ Remove from queue" : "✕ Cancel";
 
+  const isLimited = job.state === "paused_due_to_limit";
+  forceResumeBtn.style.display = isLimited ? "inline-flex" : "none";
+
+  _renderCtxBloatBanner(job);
   updateMsgBar(job);
+}
+
+function _renderCtxBloatBanner(job) {
+  const banner = document.getElementById("ctx-bloat-banner");
+  if (!banner) return;
+  const ctx = (job.input_tokens || 0) + (job.cache_read_tokens || 0) + (job.cache_creation_tokens || 0);
+  const isPaused = job.state === "paused_due_to_limit";
+  const isRunning = job.state === "running";
+
+  if (ctx < 500_000 && !(isPaused && ctx > 0)) {
+    banner.style.display = "none";
+    return;
+  }
+
+  let level, icon, headline, body, showFreshBtn;
+  if (ctx >= 1_500_000) {
+    level = "danger"; icon = "🔴";
+    headline = `Context is ${fmtNum(ctx)} tokens — extremely large`;
+    body = "Each resumed turn reads this entire context, burning through your hourly limit in minutes. This job will keep hitting limits. Starting a fresh job with a focused prompt will be far more efficient.";
+    showFreshBtn = true;
+  } else if (ctx >= 500_000) {
+    level = "warn"; icon = "🟡";
+    headline = `Context is ${fmtNum(ctx)} tokens — getting large`;
+    body = "This job's context is growing. If it keeps hitting the rate limit, consider starting a new focused job instead of resuming.";
+    showFreshBtn = isPaused;
+  } else {
+    banner.style.display = "none";
+    return;
+  }
+
+  const freshBtnHtml = showFreshBtn
+    ? `<button class="ctx-bloat-btn" id="ctx-bloat-fresh-btn" title="Open New Job modal with this prompt pre-filled">Start fresh job ↗</button>`
+    : "";
+
+  banner.style.display = "block";
+  banner.className = `ctx-bloat-banner ctx-bloat-${level}`;
+  banner.innerHTML = `
+    <div class="ctx-bloat-icon">${icon}</div>
+    <div class="ctx-bloat-body">
+      <strong>${headline}</strong>
+      <span>${body}</span>
+    </div>
+    ${freshBtnHtml}
+  `;
+
+  if (showFreshBtn) {
+    document.getElementById("ctx-bloat-fresh-btn")?.addEventListener("click", () => {
+      // Pre-fill the new job modal with the current prompt
+      document.getElementById("prompt-input").value = job.prompt || "";
+      document.getElementById("cwd-input").value = job.working_dir || "";
+      document.getElementById("modal-overlay").style.display = "flex";
+      document.getElementById("prompt-input").focus();
+    });
+  }
 }
 
 function updateMsgBar(job) {
@@ -406,7 +478,28 @@ editTitleInput.addEventListener("keydown", e => {
 });
 editTitleInput.addEventListener("blur", _saveTitleEdit);
 
+// ── Inline effort / model selects ─────────────────────────────────────────────
+
+async function _patchJob(patch) {
+  if (!activeJobId) return;
+  const res = await fetch(`/api/jobs/${activeJobId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (res.ok) { activeJob = await res.json(); }
+}
+
+document.getElementById("meta-effort-select").addEventListener("change", e => {
+  _patchJob({ effort: e.target.value || null });
+});
+document.getElementById("meta-model-select").addEventListener("change", e => {
+  _patchJob({ model: e.target.value || null });
+});
+
 // ── Stats polling ─────────────────────────────────────────────────────────────
+
+const statCacheHit = document.getElementById("stat-cache-hit");
 
 async function refreshStats() {
   try {
@@ -417,11 +510,219 @@ async function refreshStats() {
     statRunning.textContent = s.jobs_running;
     statInTok.textContent   = fmtNum(s.total_input_tokens);
     statOutTok.textContent  = fmtNum(s.total_output_tokens);
+    if (s.cache_hit_rate !== undefined) {
+      const pct = (s.cache_hit_rate * 100).toFixed(0);
+      statCacheHit.textContent = pct + "%";
+      statCacheHit.style.color = s.cache_hit_rate >= 0.5 ? "var(--green)" :
+                                  s.cache_hit_rate >= 0.2 ? "var(--yellow)" : "var(--red)";
+    }
   } catch {}
 }
 
 refreshStats();
 setInterval(refreshStats, 5_000);
+
+// ── Token Efficiency Modal ────────────────────────────────────────────────────
+
+const efficiencyBtn     = document.getElementById("efficiency-btn");
+const efficiencyOverlay = document.getElementById("efficiency-overlay");
+const efficiencyClose   = document.getElementById("efficiency-close");
+
+efficiencyBtn.addEventListener("click", openEfficiencyModal);
+efficiencyClose.addEventListener("click", () => { efficiencyOverlay.style.display = "none"; });
+efficiencyOverlay.addEventListener("click", e => {
+  if (e.target === efficiencyOverlay) efficiencyOverlay.style.display = "none";
+});
+
+// Persist user's limit setting
+const _LIMIT_KEY = "orch_5h_limit";
+function _getSavedLimit() {
+  const v = parseInt(localStorage.getItem(_LIMIT_KEY) || "0");
+  return v > 0 ? v : null;
+}
+
+async function openEfficiencyModal() {
+  efficiencyOverlay.style.display = "flex";
+  // Restore saved limit
+  const saved = _getSavedLimit();
+  const limitInput = document.getElementById("eff-limit-input");
+  if (saved && limitInput) limitInput.value = saved;
+  await Promise.all([refreshEfficiency(), refreshUsageWindow()]);
+}
+
+// Save limit on input change
+document.addEventListener("DOMContentLoaded", () => {
+  const li = document.getElementById("eff-limit-input");
+  if (li) li.addEventListener("change", () => {
+    const v = parseInt(li.value || "0");
+    if (v > 0) localStorage.setItem(_LIMIT_KEY, v);
+    refreshUsageWindow();
+  });
+});
+
+function _effStateClass(state) {
+  if (state === "completed") return "state-completed";
+  if (state === "running")   return "state-running";
+  if (state === "failed")    return "state-failed";
+  if (state === "paused_due_to_limit") return "state-paused";
+  return "";
+}
+
+async function refreshUsageWindow() {
+  try {
+    const res = await fetch("/api/usage-window");
+    if (!res.ok) return;
+    const data = await res.json();
+    const limit5h = _getSavedLimit();
+
+    // Now label
+    const nowEl = document.getElementById("eff-window-now");
+    if (nowEl) nowEl.textContent = "as of " + new Date().toLocaleTimeString();
+
+    // Window cards
+    function _fillCard(prefix, w) {
+      const ctxEl  = document.getElementById(`eff-${prefix}-ctx`);
+      const costEl = document.getElementById(`eff-${prefix}-cost`);
+      const barEl  = document.getElementById(`eff-${prefix}-bar`);
+      const pctEl  = document.getElementById(`eff-${prefix}-pct`);
+      if (ctxEl)  ctxEl.textContent  = fmtNum(w.ctx) + " ctx";
+      if (costEl) costEl.textContent = w.cost > 0 ? `$${w.cost.toFixed(3)} · ${w.calls} calls` : `${w.calls} calls`;
+
+      if (barEl && limit5h && prefix !== "w24") {
+        const pct = Math.min((w.ctx / limit5h) * 100, 100);
+        barEl.style.width = pct + "%";
+        barEl.style.background = pct >= 90 ? "var(--red)" : pct >= 70 ? "var(--yellow)" : "var(--green)";
+        if (pctEl) {
+          pctEl.textContent = pct.toFixed(1) + "% of limit";
+          pctEl.style.color = pct >= 90 ? "var(--red)" : pct >= 70 ? "var(--yellow)" : "var(--green)";
+        }
+      } else if (barEl) {
+        barEl.style.width = "0";
+        if (pctEl) pctEl.textContent = limit5h ? "" : "Set limit above to see %";
+      }
+    }
+    _fillCard("w1",  data.windows["1h"]);
+    _fillCard("w5",  data.windows["5h"]);
+    _fillCard("w24", data.windows["24h"]);
+
+    // Bar chart — 24 hours
+    const chart = document.getElementById("eff-chart");
+    const xaxis = document.getElementById("eff-chart-xaxis");
+    if (chart) {
+      const maxCtx = Math.max(...data.hours.map(h => h.ctx), 1);
+      chart.innerHTML = "";
+      xaxis.innerHTML = "";
+      for (const h of data.hours) {
+        const pct = (h.ctx / maxCtx) * 100;
+        const bar = document.createElement("div");
+        bar.className = "eff-chart-bar";
+        bar.style.height = Math.max(pct, h.ctx > 0 ? 2 : 0) + "%";
+        const isHeavy = limit5h && h.ctx >= limit5h * 0.8;
+        bar.style.background = isHeavy ? "var(--red)" :
+                               (h.ctx >= maxCtx * 0.7 ? "var(--yellow)" : "var(--accent)");
+        bar.title = `${h.label}: ${fmtNum(h.ctx)} ctx · ${fmtNum(h.output)} out · $${h.cost.toFixed(3)} · ${h.calls} calls`;
+        chart.appendChild(bar);
+
+        const lbl = document.createElement("div");
+        lbl.className = "eff-chart-xlabel";
+        const hr = parseInt(h.label);
+        lbl.textContent = (hr % 6 === 0) ? h.label : "";
+        xaxis.appendChild(lbl);
+      }
+    }
+
+    // Limit hits
+    const hitsWrap = document.getElementById("eff-limit-hits");
+    const hitsList = document.getElementById("eff-limit-hits-list");
+    if (data.limit_hits && data.limit_hits.length > 0) {
+      hitsWrap.style.display = "block";
+      hitsList.innerHTML = data.limit_hits.map(lh => {
+        const d = new Date(lh.ts.replace(" ", "T") + "Z");
+        return `<div class="eff-hit-row">
+          <span class="eff-hit-time">${d.toLocaleString()}</span>
+          <span class="eff-hit-ctx">${fmtNum(lh.ctx)} ctx at limit</span>
+          <span class="eff-hit-msg">${escHtml(lh.result_text.slice(0, 80))}</span>
+        </div>`;
+      }).join("");
+    } else {
+      hitsWrap.style.display = "none";
+    }
+  } catch(e) {
+    console.error("usage-window fetch failed", e);
+  }
+}
+
+async function refreshEfficiency() {
+  try {
+    const res = await fetch("/api/token-efficiency");
+    if (!res.ok) return;
+    const data = await res.json();
+    const t = data.totals;
+
+    document.getElementById("eff-total-ctx").textContent        = fmtNum(t.total_context_tokens);
+    document.getElementById("eff-total-out").textContent        = fmtNum(t.output_tokens);
+    document.getElementById("eff-total-cache-read").textContent = fmtNum(t.cache_read_tokens);
+    document.getElementById("eff-total-cache-write").textContent= fmtNum(t.cache_creation_tokens);
+    document.getElementById("eff-total-cost").textContent       = t.total_cost_usd > 0 ? "$" + t.total_cost_usd.toFixed(3) : "—";
+    const hitPct = (t.overall_cache_hit_rate * 100).toFixed(1) + "%";
+    const hitEl = document.getElementById("eff-total-hit-rate");
+    hitEl.textContent = hitPct;
+    hitEl.style.color = t.overall_cache_hit_rate >= 0.5 ? "var(--green)" :
+                        t.overall_cache_hit_rate >= 0.2 ? "var(--yellow)" : "var(--red)";
+
+    // Efficiency tip
+    const tip = document.getElementById("eff-tip");
+    if (t.total_context_tokens === 0) {
+      tip.textContent = "No token data yet — run a job to see stats.";
+      tip.className = "eff-tip eff-tip-info";
+    } else if (t.overall_cache_hit_rate < 0.1) {
+      tip.textContent = "⚠ Low cache reuse — context is growing without being served from cache. Large cache_write values mean each job loads a big new context. Break large tasks into smaller jobs or reduce the amount of code/files Claude reads per session.";
+      tip.className = "eff-tip eff-tip-warn";
+    } else if (t.overall_cache_hit_rate < 0.4) {
+      tip.textContent = "Cache reuse is moderate. Sessions with many resumes tend to improve as context stabilises in cache.";
+      tip.className = "eff-tip eff-tip-info";
+    } else {
+      tip.textContent = "Good cache efficiency — Claude is reading most of its context from cache, keeping costs and rate-limit consumption low.";
+      tip.className = "eff-tip eff-tip-ok";
+    }
+
+    // Table
+    const tbody = document.getElementById("eff-tbody");
+    tbody.innerHTML = "";
+    for (const j of data.jobs) {
+      const hasCtx  = j.total_context_tokens > 0;
+      const hitRate = hasCtx ? (j.cache_hit_rate * 100).toFixed(0) + "%" : "—";
+      const burn    = j.burn_rate_per_min != null ? fmtNum(j.burn_rate_per_min) : "—";
+      const cost    = j.total_cost_usd > 0 ? "$" + j.total_cost_usd.toFixed(3) : "—";
+      const title   = j.title || "";
+      const isBloated = j.total_context_tokens >= 1_500_000;
+      const isLarge   = j.total_context_tokens >= 500_000;
+      const tr = document.createElement("tr");
+      if (isBloated) tr.className = "eff-row-danger";
+      else if (isLarge) tr.className = "eff-row-warn";
+      const ctxWarning = isBloated ? " 🔴" : isLarge ? " 🟡" : "";
+      tr.innerHTML = `
+        <td class="eff-job-name" title="${escHtml(title)}">${escHtml(title.length > 32 ? title.slice(0,32)+"…" : title)}</td>
+        <td><span class="eff-state ${_effStateClass(j.state)}">${j.state.replace("_due_to_limit","")}</span></td>
+        <td class="eff-num eff-ctx">${fmtNum(j.total_context_tokens)}${ctxWarning}</td>
+        <td class="eff-num">${fmtNum(j.output_tokens)}</td>
+        <td class="eff-num eff-cache-hit">${fmtNum(j.cache_read_tokens)}</td>
+        <td class="eff-num">${fmtNum(j.cache_creation_tokens)}</td>
+        <td class="eff-num ${j.cache_hit_rate >= 0.5 ? 'eff-good' : j.cache_hit_rate >= 0.2 ? 'eff-warn' : (hasCtx ? 'eff-bad' : '')}">${hitRate}</td>
+        <td class="eff-num">${j.resume_count || 0}</td>
+        <td class="eff-num">${burn}</td>
+        <td class="eff-num eff-cost">${cost}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    console.error("efficiency fetch failed", e);
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 
 // ── SSE streaming ─────────────────────────────────────────────────────────────
 
@@ -513,6 +814,7 @@ function handleEvent(data) {
     const canCancel = state === "running" || state === "queued";
     cancelBtn.classList.toggle("visible", canCancel);
     cancelBtn.textContent = state === "queued" ? "✕ Remove from queue" : "✕ Cancel";
+    forceResumeBtn.style.display = state === "paused_due_to_limit" ? "inline-flex" : "none";
     if (state === "running") {
       statusText.textContent = "Claude is working…";
       statusDot.className = "connected";
@@ -535,10 +837,12 @@ function handleEvent(data) {
   }
 
   // Update thinking label when tool activity is seen
-  if (type === "tool_use" && activeJob && activeJob.state === "running") {
-    const name = data.name || (data.message?.content || []).find(p => p.type === "tool_use")?.name;
-    if (name) setThinking(true, `Running ${name}…`);
-  } else if ((type === "assistant" || type === "result") && activeJob && activeJob.state === "running") {
+  if ((type === "assistant" || type === "tool_use") && activeJob && activeJob.state === "running") {
+    const parts = Array.isArray(parsed?.message?.content) ? parsed.message.content : [];
+    const toolName = data.name || parts.find(p => p.type === "tool_use")?.name;
+    if (toolName) setThinking(true, `Running ${toolName}…`);
+    else setThinking(true, "Claude is working…");
+  } else if (type === "result" && activeJob && activeJob.state === "running") {
     setThinking(true, "Claude is working…");
   }
 
@@ -610,11 +914,30 @@ function renderEvent(data, outerType) {
   switch (evType) {
 
     case "assistant": {
-      const text = extractAssistantText(parsed);
-      if (!text || !text.trim()) return null;
-      const el = block("assistant", ts);
-      el._content.innerHTML = renderMarkdown(text);
-      return el;
+      const parts = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
+      // Fallback for events that carry text directly
+      if (!parts.length && typeof parsed.text === "string" && parsed.text.trim()) {
+        const el = block("assistant", ts);
+        el._content.innerHTML = renderMarkdown(parsed.text);
+        return el;
+      }
+      const frag = document.createDocumentFragment();
+      for (const part of parts) {
+        if (part.type === "text" && part.text?.trim()) {
+          const el = block("assistant", ts);
+          el._content.innerHTML = renderMarkdown(part.text);
+          frag.appendChild(el);
+        } else if (part.type === "tool_use" && part.name) {
+          const el = block("tool_use", ts, "tool-block");
+          const inputStr = formatToolInput(part.name, part.input || {});
+          el._content.innerHTML =
+            `<span class="tool-name">❯ ${escHtml(part.name)}</span>` +
+            (inputStr ? `<pre class="tool-input">${escHtml(inputStr)}</pre>` : "");
+          frag.appendChild(el);
+        }
+        // thinking blocks are intentionally skipped
+      }
+      return frag.childNodes.length ? frag : null;
     }
 
     case "tool_use": {
@@ -640,8 +963,22 @@ function renderEvent(data, outerType) {
       return el;
     }
 
-    case "user":
-      return null;
+    case "user": {
+      const parts = Array.isArray(parsed.message?.content) ? parsed.message.content : [];
+      const results = parts.filter(p => p.type === "tool_result");
+      if (!results.length) return null;
+      const frag = document.createDocumentFragment();
+      for (const r of results) {
+        let text = "";
+        if (typeof r.content === "string") text = r.content;
+        else if (Array.isArray(r.content)) text = r.content.filter(p => p.type === "text").map(p => p.text).join("\n");
+        if (!text || !text.trim()) continue;
+        const el = block("tool_result", ts, "tool-result-block");
+        el._content.innerHTML = `<span class="tool-result-label">◀ result</span><pre class="tool-result-text">${escHtml(truncate(text, 8000))}</pre>`;
+        frag.appendChild(el);
+      }
+      return frag.childNodes.length ? frag : null;
+    }
 
     case "user_msg": {
       const text = parsed.text || "";
@@ -824,12 +1161,19 @@ function scrollToBottom() { outputWrap.scrollTop = outputWrap.scrollHeight; }
 
 document.getElementById("new-job-btn").addEventListener("click", () => openModal());
 
+const modelInput    = document.getElementById("model-input");
+const maxTurnsInput = document.getElementById("max-turns-input");
+const effortInput   = document.getElementById("effort-input");
+
 function openModal(prefill) {
   modalOverlay.classList.add("open");
   if (prefill) {
     promptInput.value = prefill.prompt || "";
     cwdInput.value = prefill.working_dir || "";
     if (titleInput) titleInput.value = prefill.title || "";
+    if (modelInput) modelInput.value = prefill.model || "";
+    if (maxTurnsInput) maxTurnsInput.value = prefill.max_turns || "";
+    if (effortInput) effortInput.value = prefill.effort || "";
   }
   promptInput.focus();
 }
@@ -839,6 +1183,9 @@ function closeModal() {
   promptInput.value = "";
   cwdInput.value = "";
   if (titleInput) titleInput.value = "";
+  if (modelInput) modelInput.value = "";
+  if (maxTurnsInput) maxTurnsInput.value = "";
+  if (effortInput) effortInput.value = "";
   if (typeof modalAttachments !== "undefined") modalAttachments.clear();
 }
 
@@ -852,6 +1199,10 @@ async function submitJob() {
   if (!rawPrompt) { promptInput.focus(); return; }
   const working_dir = cwdInput.value.trim() || null;
   const title = titleInput ? titleInput.value.trim() || null : null;
+  const model = modelInput ? modelInput.value || null : null;
+  const max_turns_raw = maxTurnsInput ? parseInt(maxTurnsInput.value, 10) : NaN;
+  const max_turns = isNaN(max_turns_raw) ? null : max_turns_raw;
+  const effort = effortInput ? effortInput.value || null : null;
   const paths = (typeof modalAttachments !== "undefined") ? modalAttachments.consumePaths() : [];
   const prompt = paths.length
     ? rawPrompt + "\n\nAttached files:\n" + paths.map(p => "- " + p).join("\n")
@@ -860,7 +1211,7 @@ async function submitJob() {
   const res = await fetch("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, working_dir, title }),
+    body: JSON.stringify({ prompt, working_dir, title, model, max_turns, effort }),
   });
   const job = await res.json();
   await loadJobList();
@@ -929,6 +1280,19 @@ cancelBtn.addEventListener("click", async () => {
   await fetch(`/api/jobs/${activeJobId}`, { method: "DELETE" });
   loadJobList();
   fetch(`/api/jobs/${activeJobId}`).then(r => r.json()).then(j => { activeJob = j; renderDetailPanel(j); });
+});
+
+// ── Force Resume button ───────────────────────────────────────────────────────
+
+forceResumeBtn.addEventListener("click", async () => {
+  if (!activeJobId) return;
+  forceResumeBtn.disabled = true;
+  const res = await fetch(`/api/jobs/${activeJobId}/force-resume`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Could not force resume: " + (err.detail || res.status));
+  }
+  forceResumeBtn.disabled = false;
 });
 
 // ── Retry button ──────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from .detector import StopReason, parse_reset_time
+from .detector import StopReason, parse_reset_time, parse_reset_time_from_event
 from .job import Job, JobState
 from .runner import run_job, send_message
 from .store import Store
@@ -224,8 +224,6 @@ class Scheduler:
             # Add to front only if not already queued (avoid duplicates from the RUNNING→PAUSED pass above)
             if job.id not in self._queue:
                 self._queue.insert(0, job.id)
-        if self._queue:
-            asyncio.ensure_future(self._drain())
 
     # ── Queue drain ───────────────────────────────────────────────────────────
 
@@ -261,6 +259,7 @@ class Scheduler:
                     await self._wait_and_resume(job)
                     return
 
+                job.error = None  # clear any stale error from previous run
                 job.transition(JobState.RUNNING)
                 self._store.save_job(job)
                 await self._broadcast_state(job)
@@ -323,8 +322,18 @@ class Scheduler:
                 # Scan logs now as a last resort
                 last_result_text = self._last_limit_text_from_logs(job.id) or ""
 
-        # Try to parse exact reset time from the limit message
-        parsed_reset = parse_reset_time(last_result_text) if last_result_text else None
+        # Try to get reset time: prefer resetsAt unix timestamp (unambiguous UTC),
+        # fall back to parsing the human-readable text
+        parsed_reset = None
+        if last_result_text:
+            import json as _json
+            try:
+                ev = _json.loads(last_result_text)
+                parsed_reset = parse_reset_time_from_event(ev)
+            except Exception:
+                pass
+            if parsed_reset is None:
+                parsed_reset = parse_reset_time(last_result_text)
         if parsed_reset and parsed_reset <= datetime.utcnow():
             # Reset time already passed — resume immediately
             retry_at = datetime.utcnow()
@@ -364,6 +373,7 @@ class Scheduler:
 
         self._force_resume_events.pop(job.id, None)
         job.resume_count += 1
+        job.error = None  # clear stale "interrupted by server restart" error
         job.transition(JobState.RUNNING)
         self._store.save_job(job)
         await self._broadcast_state(job)
@@ -387,17 +397,18 @@ class Scheduler:
         await self._handle_stop(job, stop_reason, last_result_text)
 
     def _last_limit_text_from_logs(self, job_id: str) -> str | None:
-        """Scan stored logs (last 50 lines) for a limit message. Returns text or None."""
+        """Scan stored logs (last 50 lines) for a limit message or rate_limit_event.
+        Returns the raw text (which may contain a resetsAt unix timestamp) or None."""
         from .detector import is_limit_message
         import json as _json
         logs = self._store.get_logs(job_id)
         for row in reversed(logs[-50:]):
             raw = row.get("raw", "")
-            if is_limit_message(raw):
-                return raw
-            # Also check inside JSON result events
             try:
                 ev = _json.loads(raw)
+                # rate_limit_event has an unambiguous resetsAt unix timestamp — prefer it
+                if ev.get("type") == "rate_limit_event" and ev.get("rate_limit_info", {}).get("resetsAt"):
+                    return raw
                 result_text = ev.get("result", "") or ""
                 if isinstance(result_text, str) and is_limit_message(result_text):
                     return result_text
@@ -406,6 +417,8 @@ class Scheduler:
                     return msg
             except Exception:
                 pass
+            if is_limit_message(raw):
+                return raw
         return None
 
     async def _broadcast_state(self, job: Job) -> None:

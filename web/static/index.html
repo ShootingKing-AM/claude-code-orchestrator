@@ -38,6 +38,11 @@
         <span class="stat-label">Out tok</span>
         <span class="stat-value" id="stat-out-tok">0</span>
       </div>
+      <div class="stat-item stat-item-cache" title="Prompt cache hit rate — higher means fewer tokens consumed">
+        <span class="stat-label">Cache</span>
+        <span class="stat-value" id="stat-cache-hit">—</span>
+      </div>
+      <button id="efficiency-btn" title="Open token efficiency report">⚡</button>
     </div>
   </div>
 
@@ -59,9 +64,13 @@
           <div id="detail-prompt"></div>
           <div class="detail-actions">
             <button id="retry-btn" class="btn-action btn-retry" title="Re-run this prompt as a new job">↺ Retry</button>
+            <button id="force-resume-btn" class="btn-action btn-force-resume" title="Skip the rate-limit wait and resume now" style="display:none">⚡ Force Resume</button>
             <button id="cancel-btn" class="btn-action btn-cancel" title="Cancel running job">✕ Cancel</button>
           </div>
         </div>
+
+        <!-- Context bloat warning -->
+        <div id="ctx-bloat-banner" style="display:none"></div>
 
         <!-- Row 2: metadata chips -->
         <div class="detail-row detail-row-meta">
@@ -92,6 +101,28 @@
           <div class="meta-chip" id="meta-resumes-wrap">
             <span class="meta-label">Resumes</span>
             <span id="meta-resumes"></span>
+          </div>
+          <div class="meta-chip meta-chip-editable" id="meta-effort-wrap" title="Click to change effort level for next resume">
+            <span class="meta-label">Effort</span>
+            <select id="meta-effort-select" class="meta-inline-select">
+              <option value="">default</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </div>
+          <div class="meta-chip meta-chip-editable" id="meta-model-wrap" title="Click to change model for next resume">
+            <span class="meta-label">Model</span>
+            <select id="meta-model-select" class="meta-inline-select">
+              <option value="">default</option>
+              <option value="claude-sonnet-4-6">sonnet-4-6</option>
+              <option value="claude-opus-4-7">opus-4-7</option>
+              <option value="claude-opus-4-5">opus-4-5</option>
+              <option value="claude-sonnet-4-5">sonnet-4-5</option>
+              <option value="claude-haiku-4-5">haiku-4-5</option>
+            </select>
           </div>
           <div class="meta-chip" id="meta-tokens-wrap">
             <span class="meta-label">Tokens</span>
@@ -168,10 +199,158 @@
     <label for="cwd-input">Working directory <span style="color:var(--text-muted)">(optional, defaults to home)</span></label>
     <input type="text" id="cwd-input" placeholder="/home/user/myproject" />
 
+    <div class="modal-advanced-row">
+      <div class="modal-field-group">
+        <label for="model-input">Model <span style="color:var(--text-muted)">(optional)</span></label>
+        <select id="model-input">
+          <option value="">Default (claude sets it)</option>
+          <option value="claude-opus-4-5">claude-opus-4-5</option>
+          <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+          <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+          <option value="claude-opus-4-7">claude-opus-4-7 (latest)</option>
+          <option value="claude-sonnet-4-6">claude-sonnet-4-6 (latest)</option>
+        </select>
+      </div>
+      <div class="modal-field-group">
+        <label for="max-turns-input">Max turns <span style="color:var(--text-muted)">(optional)</span></label>
+        <input type="number" id="max-turns-input" placeholder="unlimited" min="1" max="200" />
+      </div>
+      <div class="modal-field-group">
+        <label for="effort-input">Effort <span style="color:var(--text-muted)">(optional)</span></label>
+        <select id="effort-input">
+          <option value="">Default (from settings)</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
       <button class="btn btn-ghost btn-attach" id="modal-attach" title="Attach files">📎</button>
       <button class="btn btn-primary" id="modal-submit">Start Job</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Token Efficiency Modal ── -->
+<div id="efficiency-overlay" style="display:none">
+  <div id="efficiency-modal">
+    <div class="eff-header">
+      <h2>⚡ Token Efficiency</h2>
+      <button id="efficiency-close">✕</button>
+    </div>
+
+    <div class="eff-totals" id="eff-totals">
+      <div class="eff-total-card">
+        <div class="eff-total-label">Total Context</div>
+        <div class="eff-total-value" id="eff-total-ctx">—</div>
+        <div class="eff-total-sub">input + cache (drives limits)</div>
+      </div>
+      <div class="eff-total-card">
+        <div class="eff-total-label">Total Output</div>
+        <div class="eff-total-value" id="eff-total-out">—</div>
+      </div>
+      <div class="eff-total-card eff-card-cache">
+        <div class="eff-total-label">Cache Hits</div>
+        <div class="eff-total-value" id="eff-total-cache-read">—</div>
+        <div class="eff-total-sub">tokens served cheap</div>
+      </div>
+      <div class="eff-total-card">
+        <div class="eff-total-label">Cache Writes</div>
+        <div class="eff-total-value" id="eff-total-cache-write">—</div>
+        <div class="eff-total-sub">tokens written to cache</div>
+      </div>
+      <div class="eff-total-card eff-card-rate">
+        <div class="eff-total-label">Cache Hit Rate</div>
+        <div class="eff-total-value" id="eff-total-hit-rate">—</div>
+        <div class="eff-total-sub">of total context tokens</div>
+      </div>
+      <div class="eff-total-card eff-card-cost">
+        <div class="eff-total-label">Total Cost</div>
+        <div class="eff-total-value" id="eff-total-cost">—</div>
+        <div class="eff-total-sub">USD across all jobs</div>
+      </div>
+    </div>
+
+    <div class="eff-tip" id="eff-tip"></div>
+
+    <!-- Usage window section -->
+    <div class="eff-section">
+      <div class="eff-section-header">
+        <div class="eff-section-left">
+          <span class="eff-section-title">ROLLING WINDOW USAGE</span>
+          <span class="eff-section-sub">Anthropic limits are per rolling 5-hr window, shared across claude.ai + Claude Code + Desktop</span>
+        </div>
+        <div class="eff-limit-input-wrap">
+          <label for="eff-limit-input">My 5-hr limit (ctx tokens):</label>
+          <input type="number" id="eff-limit-input" class="eff-limit-input" placeholder="e.g. 5000000" step="500000" />
+          <span class="eff-limit-hint">Check yours at claude.ai/settings → Usage</span>
+        </div>
+      </div>
+
+      <div class="eff-windows">
+        <div class="eff-window-card">
+          <div class="eff-window-label">Last 1 hour</div>
+          <div class="eff-window-ctx" id="eff-w1-ctx">—</div>
+          <div class="eff-window-sub" id="eff-w1-cost"></div>
+          <div class="eff-window-bar-wrap"><div class="eff-window-bar" id="eff-w1-bar"></div></div>
+        </div>
+        <div class="eff-window-card eff-window-card-5h">
+          <div class="eff-window-label">Last 5 hours <span class="eff-window-badge">rolling limit window</span></div>
+          <div class="eff-window-ctx" id="eff-w5-ctx">—</div>
+          <div class="eff-window-sub" id="eff-w5-cost"></div>
+          <div class="eff-window-bar-wrap"><div class="eff-window-bar" id="eff-w5-bar"></div></div>
+          <div class="eff-window-pct" id="eff-w5-pct"></div>
+        </div>
+        <div class="eff-window-card">
+          <div class="eff-window-label">Last 24 hours</div>
+          <div class="eff-window-ctx" id="eff-w24-ctx">—</div>
+          <div class="eff-window-sub" id="eff-w24-cost"></div>
+        </div>
+      </div>
+
+      <!-- 24-hour bar chart -->
+      <div class="eff-chart-label">Context tokens consumed — last 24 hrs (hover for details)</div>
+      <div class="eff-chart" id="eff-chart"></div>
+      <div class="eff-chart-xaxis" id="eff-chart-xaxis"></div>
+
+      <!-- Last limit hits -->
+      <div class="eff-limit-hits" id="eff-limit-hits" style="display:none">
+        <div class="eff-section-title" style="margin-top:12px;margin-bottom:6px">RECENT LIMIT HITS</div>
+        <div id="eff-limit-hits-list"></div>
+      </div>
+
+      <!-- How limits work -->
+      <div class="eff-how-limits">
+        <span class="eff-how-item">⏱ <strong>Rolling window</strong> — not a fixed clock reset. If you used X tokens at 2pm, that usage expires at 7pm.</span>
+        <span class="eff-how-item">📊 <strong>Limit = total context</strong> — input + cache_write + cache_read all count (even cached tokens consume quota).</span>
+        <span class="eff-how-item">🔗 <strong>Shared quota</strong> — Claude.ai chat, Claude Code, and Claude Desktop all draw from the same 5-hr pool.</span>
+        <span class="eff-how-item">📈 <strong>Peak hours</strong> — Mon–Fri 5–11am PT, limits may be tighter.</span>
+      </div>
+    </div>
+
+    <div class="eff-table-wrap">
+      <table class="eff-table" id="eff-table">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>State</th>
+            <th title="Total context tokens = uncached + cache_write + cache_read. This is what drives rate limits.">Context</th>
+            <th>Output</th>
+            <th title="Tokens served from prompt cache (charged at ~10% of normal rate)">Cache Hit</th>
+            <th title="Tokens written to cache this job (charged at ~125% of normal rate, but future reads are cheap)">Cache Write</th>
+            <th title="% of context that came from cache — higher = better efficiency">Hit Rate</th>
+            <th title="Resumes due to rate limit">↺</th>
+            <th title="Total context + output tokens per minute">Burn/min</th>
+            <th title="Estimated cost in USD">Cost $</th>
+          </tr>
+        </thead>
+        <tbody id="eff-tbody"></tbody>
+      </table>
     </div>
   </div>
 </div>

@@ -39,8 +39,14 @@ class Job:
     resume_count: int = 0
     working_dir: Optional[str] = None       # cwd passed to claude
     title: Optional[str] = None             # user-editable display name
-    input_tokens: int = 0                   # cumulative across all runs
+    model: Optional[str] = None             # --model flag (None = claude default)
+    max_turns: Optional[int] = None         # --max-turns flag (None = unlimited)
+    effort: Optional[str] = None            # --effort flag (low/medium/high/xhigh/max)
+    input_tokens: int = 0                   # uncached input tokens (usually tiny)
     output_tokens: int = 0
+    cache_read_tokens: int = 0              # input tokens served from prompt cache
+    cache_creation_tokens: int = 0          # input tokens written to prompt cache
+    total_cost_usd: float = 0.0             # cumulative USD cost across all runs
 
     def transition(self, new_state: JobState) -> None:
         allowed = VALID_TRANSITIONS.get(self.state, set())
@@ -66,6 +72,12 @@ class Job:
             "title": self.title,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+            "total_cost_usd": self.total_cost_usd,
+            "model": self.model,
+            "max_turns": self.max_turns,
+            "effort": self.effort,
         }
 
     @classmethod
@@ -81,4 +93,10 @@ class Job:
         j.title = d.get("title")
         j.input_tokens = d.get("input_tokens", 0)
         j.output_tokens = d.get("output_tokens", 0)
+        j.cache_read_tokens = d.get("cache_read_tokens", 0)
+        j.cache_creation_tokens = d.get("cache_creation_tokens", 0)
+        j.total_cost_usd = d.get("total_cost_usd", 0.0)
+        j.model = d.get("model")
+        j.max_turns = d.get("max_turns")
+        j.effort = d.get("effort")
         return j
