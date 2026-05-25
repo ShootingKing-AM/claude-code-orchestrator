@@ -43,6 +43,10 @@ class Scheduler:
         self._msg_locks: dict[str, asyncio.Lock] = {}
         # Messages queued while a job is paused — drained and delivered on resume
         self._pending_msgs: dict[str, list[str]] = {}
+        # Per-job event set by force_resume() to skip the wait timer
+        self._force_resume_events: dict[str, asyncio.Event] = {}
+        # Limit message text recovered from logs for jobs interrupted by server restart
+        self._startup_limit_text: dict[str, str] = {}
         self.processes_spawned: int = 0  # total claude subprocesses ever launched
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -57,6 +61,14 @@ class Scheduler:
     # Keep old name as alias so server.py doesn't break
     def start_job(self, job: Job) -> None:
         self.enqueue_job(job)
+
+    def force_resume(self, job_id: str) -> bool:
+        """Skip the rate-limit wait and resume a paused job immediately."""
+        event = self._force_resume_events.get(job_id)
+        if event:
+            event.set()
+            return True
+        return False
 
     def cancel_job(self, job_id: str) -> bool:
         # Remove from queue if not yet started
@@ -170,22 +182,49 @@ class Scheduler:
         return True
 
     def resume_paused_jobs(self) -> None:
-        """On startup, re-add paused jobs to the front of the queue.
-        Any job stuck in RUNNING state means the server crashed mid-run — mark it FAILED.
+        """On startup, re-add paused/interrupted jobs to the front of the queue.
+
+        RUNNING jobs with a session_id were interrupted mid-run by a server crash.
+        If their logs show a limit hit, treat them as PAUSED so they auto-resume.
+        Otherwise mark them FAILED.
         """
-        # Mark orphaned RUNNING jobs as failed
         for job in self._store.list_jobs_by_state(JobState.RUNNING):
-            log.warning("Job %s was RUNNING at startup (server restart?) — marking FAILED", job.id)
-            job.transition(JobState.FAILED)
-            job.error = "interrupted by server restart"
-            self._store.save_job(job)
+            if job.session_id:
+                # Check if the last run ended with a limit message in stored logs
+                limit_text = self._last_limit_text_from_logs(job.id)
+                if limit_text is not None:
+                    log.info(
+                        "Job %s was RUNNING at startup with limit in logs — treating as PAUSED",
+                        job.id,
+                    )
+                    job.state = JobState.PAUSED_DUE_TO_LIMIT
+                    job.updated_at = datetime.utcnow().isoformat()
+                    # Store the limit text so _wait_and_resume can parse reset time
+                    self._startup_limit_text[job.id] = limit_text
+                    self._store.save_job(job)
+                else:
+                    log.warning(
+                        "Job %s was RUNNING at startup (server restart?) — marking FAILED",
+                        job.id,
+                    )
+                    job.transition(JobState.FAILED)
+                    job.error = "interrupted by server restart"
+                    self._store.save_job(job)
+            else:
+                log.warning(
+                    "Job %s was RUNNING at startup with no session_id — marking FAILED", job.id
+                )
+                job.transition(JobState.FAILED)
+                job.error = "interrupted by server restart"
+                self._store.save_job(job)
 
         paused = self._store.list_jobs_by_state(JobState.PAUSED_DUE_TO_LIMIT)
         for job in reversed(paused):  # preserve order
             log.info("Re-queuing paused job %s on startup", job.id)
-            # Reset to queued so _lifecycle handles the wait-and-resume path
-            self._queue.insert(0, job.id)
-        if paused:
+            # Add to front only if not already queued (avoid duplicates from the RUNNING→PAUSED pass above)
+            if job.id not in self._queue:
+                self._queue.insert(0, job.id)
+        if self._queue:
             asyncio.ensure_future(self._drain())
 
     # ── Queue drain ───────────────────────────────────────────────────────────
@@ -277,6 +316,13 @@ class Scheduler:
             await self._broadcast_state(job)
 
     async def _wait_and_resume(self, job: Job, last_result_text: str = "") -> None:
+        # Fall back to limit text recovered from logs on server restart
+        if not last_result_text:
+            last_result_text = self._startup_limit_text.pop(job.id, "")
+            if not last_result_text:
+                # Scan logs now as a last resort
+                last_result_text = self._last_limit_text_from_logs(job.id) or ""
+
         # Try to parse exact reset time from the limit message
         parsed_reset = parse_reset_time(last_result_text) if last_result_text else None
         if parsed_reset and parsed_reset <= datetime.utcnow():
@@ -299,14 +345,24 @@ class Scheduler:
                 "message": f"Rate limit hit. Retrying at {retry_ist.strftime('%I:%M %p IST')} ({remaining_secs // 60}m)",
             })
 
+        force_event = asyncio.Event()
+        self._force_resume_events[job.id] = force_event
+
         while datetime.utcnow() < retry_at:
             remaining = int((retry_at - datetime.utcnow()).total_seconds())
             await self._broadcast(job.id, {
                 "type": "orch_status",
                 "message": f"Waiting for limit reset… {remaining // 60}m {remaining % 60:02d}s remaining",
             })
-            await asyncio.sleep(min(POLL_INTERVAL_SECONDS, max(remaining, 1)))
+            try:
+                await asyncio.wait_for(force_event.wait(), timeout=min(POLL_INTERVAL_SECONDS, max(remaining, 1)))
+                log.info("Job %s force-resumed by user", job.id)
+                await self._broadcast(job.id, {"type": "orch_status", "message": "Force-resumed by user"})
+                break
+            except asyncio.TimeoutError:
+                pass
 
+        self._force_resume_events.pop(job.id, None)
         job.resume_count += 1
         job.transition(JobState.RUNNING)
         self._store.save_job(job)
@@ -329,6 +385,28 @@ class Scheduler:
             stop_reason = await send_message(job, queued_msg, self._store, self._broadcast)
 
         await self._handle_stop(job, stop_reason, last_result_text)
+
+    def _last_limit_text_from_logs(self, job_id: str) -> str | None:
+        """Scan stored logs (last 50 lines) for a limit message. Returns text or None."""
+        from .detector import is_limit_message
+        import json as _json
+        logs = self._store.get_logs(job_id)
+        for row in reversed(logs[-50:]):
+            raw = row.get("raw", "")
+            if is_limit_message(raw):
+                return raw
+            # Also check inside JSON result events
+            try:
+                ev = _json.loads(raw)
+                result_text = ev.get("result", "") or ""
+                if isinstance(result_text, str) and is_limit_message(result_text):
+                    return result_text
+                msg = ev.get("message", "") or ""
+                if isinstance(msg, str) and is_limit_message(msg):
+                    return msg
+            except Exception:
+                pass
+        return None
 
     async def _broadcast_state(self, job: Job) -> None:
         await self._broadcast(job.id, {"type": "orch_state", "state": job.state.value})
