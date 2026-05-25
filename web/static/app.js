@@ -527,8 +527,23 @@ setInterval(refreshStats, 5_000);
 const efficiencyBtn     = document.getElementById("efficiency-btn");
 const efficiencyOverlay = document.getElementById("efficiency-overlay");
 const efficiencyClose   = document.getElementById("efficiency-close");
+const shutdownBtn       = document.getElementById("shutdown-btn");
 
 efficiencyBtn.addEventListener("click", openEfficiencyModal);
+
+shutdownBtn.addEventListener("click", async () => {
+  if (!confirm("Shut down the orchestrator server?\n\nRunning jobs will be paused and resume automatically on next start.")) return;
+  shutdownBtn.disabled = true;
+  shutdownBtn.textContent = "…";
+  try {
+    await fetch("/api/shutdown", { method: "POST" });
+  } catch {}
+  // Server is going down — show disconnected state
+  statusDot.className = "";
+  statusText.textContent = "Server shut down";
+  shutdownBtn.textContent = "⏻";
+  shutdownBtn.disabled = false;
+});
 efficiencyClose.addEventListener("click", () => { efficiencyOverlay.style.display = "none"; });
 efficiencyOverlay.addEventListener("click", e => {
   if (e.target === efficiencyOverlay) efficiencyOverlay.style.display = "none";

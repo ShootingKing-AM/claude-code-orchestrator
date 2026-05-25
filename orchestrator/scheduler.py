@@ -347,6 +347,11 @@ class Scheduler:
         retry_ist = _to_ist(retry_at)
         log.info("Job %s paused. Retrying at %s IST", job.id, retry_ist.strftime("%H:%M:%S"))
 
+        # Clear stale error immediately so UI shows countdown, not old error message
+        if job.error:
+            job.error = None
+            self._store.save_job(job)
+
         remaining_secs = int((retry_at - datetime.utcnow()).total_seconds())
         if remaining_secs > 0:
             await self._broadcast(job.id, {
@@ -409,16 +414,23 @@ class Scheduler:
                 # rate_limit_event has an unambiguous resetsAt unix timestamp — prefer it
                 if ev.get("type") == "rate_limit_event" and ev.get("rate_limit_info", {}).get("resetsAt"):
                     return raw
+                # Only check specific error fields — never the full raw blob, which
+                # may contain normal conversation text that mentions "rate limit"
                 result_text = ev.get("result", "") or ""
                 if isinstance(result_text, str) and is_limit_message(result_text):
                     return result_text
-                msg = ev.get("message", "") or ""
-                if isinstance(msg, str) and is_limit_message(msg):
-                    return msg
+                error_info = ev.get("error") or {}
+                error_msg = error_info.get("message", "") if isinstance(error_info, dict) else str(error_info)
+                if is_limit_message(error_msg):
+                    return error_msg
+                top_msg = ev.get("message", "") or ""
+                if isinstance(top_msg, str) and is_limit_message(top_msg):
+                    return top_msg
             except Exception:
-                pass
-            if is_limit_message(raw):
-                return raw
+                # Only apply raw scan to non-JSON lines (actual limit messages
+                # printed outside structured events)
+                if is_limit_message(raw):
+                    return raw
         return None
 
     async def _broadcast_state(self, job: Job) -> None:

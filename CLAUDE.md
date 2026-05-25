@@ -85,3 +85,10 @@ Edit `LIMIT_PATTERNS` in [orchestrator/detector.py](orchestrator/detector.py). E
 ## Frontend rendering
 
 [web/static/app.js](web/static/app.js) handles event rendering in `renderEvent()`. Each `type` value maps to a styled block. Tool calls (`tool_use`) get a teal left-border block; tool results get purple; `orch_status` gets amber. To add rendering for a new event type, add a `case` in the `switch` inside `renderEvent()`.
+
+# When you are fixing Bugs or Issues !! VERY IMPORTANT !!
+1. Replicate the bug by writing a End to end integration playwright based test. Conduct the Test and get the screenshots of bugs.
+2. Investigate and solve the bug, by going to the root cause.
+3. Run the Test using playwright, take a screenshot, check the screenshot.
+4. Till the bug is fixed via testing the screenshot-playwright test, keep fixing the bug
+5. Once the bug is fixed, then commit and stop the bug fix process.

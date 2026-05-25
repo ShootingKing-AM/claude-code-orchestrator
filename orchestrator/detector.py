@@ -62,7 +62,7 @@ def parse_reset_time_from_event(event: dict) -> datetime | None:
     return None
 
 
-def parse_reset_time(text: str) -> datetime | None:
+def parse_reset_time(text: str, _now_utc: datetime | None = None) -> datetime | None:
     """
     Extract reset time from a limit message like
     "You've hit your session limit · resets 1:20pm (Asia/Kolkata)".
@@ -71,6 +71,7 @@ def parse_reset_time(text: str) -> datetime | None:
     not the server's local time. We treat the time as IST (UTC+5:30) regardless
     of the server's timezone so the math is always correct.
     Returns a UTC datetime, or None if unparseable.
+    _now_utc is injectable for testing.
     """
     m = _RESET_TIME_RE.search(text)
     if not m:
@@ -82,16 +83,15 @@ def parse_reset_time(text: str) -> datetime | None:
     elif meridiem == "am" and hour == 12:
         hour = 0
     _IST = timedelta(hours=5, minutes=30)
-    now_utc = datetime.utcnow()
+    now_utc = _now_utc if _now_utc is not None else datetime.utcnow()
     now_ist = now_utc + _IST
     reset_ist = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if reset_ist <= now_ist:
         # Reset time already passed today — resume immediately
         return now_utc
-    # Claude rate limits reset within ~1 hour. If the parsed time is more than
-    # 2 hours away it means the limit message is from a previous session/day and
-    # the reset already happened — resume immediately rather than waiting ~22h.
-    if (reset_ist - now_ist) > timedelta(hours=2):
+    # Claude's 5-hour window means the reset can be up to 5h in the future.
+    # If >6h away the message is stale (from a prior day) — resume immediately.
+    if (reset_ist - now_ist) > timedelta(hours=6):
         return now_utc
     return reset_ist - _IST  # convert back to UTC
 

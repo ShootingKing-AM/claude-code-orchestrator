@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import signal
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -185,6 +187,16 @@ async def get_queue():
 @app.get("/api/stats")
 async def get_stats():
     return scheduler.stats()
+
+
+@app.post("/api/shutdown")
+async def shutdown():
+    """Gracefully shut down the server. Sends SIGTERM to self after responding."""
+    async def _do_shutdown():
+        await asyncio.sleep(0.2)  # let the response flush first
+        os.kill(os.getpid(), signal.SIGTERM)
+    asyncio.ensure_future(_do_shutdown())
+    return {"shutting_down": True}
 
 
 @app.get("/api/usage-window")

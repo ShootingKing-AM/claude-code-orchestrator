@@ -1,11 +1,15 @@
 """Tests for stop-reason detection logic."""
 
 import pytest
+from datetime import datetime, timedelta
+from unittest.mock import patch
 from orchestrator.detector import (
     StopReason,
     classify_result_event,
     classify_line,
     is_limit_message,
+    parse_reset_time,
+    parse_reset_time_from_event,
 )
 
 
@@ -132,3 +136,74 @@ class TestClassifyLine:
 
     def test_empty_line(self):
         assert classify_line("") is None
+
+
+class TestParseResetTimeFromEvent:
+    def test_extracts_unix_timestamp(self):
+        # resetsAt=1779729000 → 2026-05-25 17:10:00 UTC
+        event = {"type": "rate_limit_event", "rate_limit_info": {"resetsAt": 1779729000}}
+        result = parse_reset_time_from_event(event)
+        assert result == datetime(2026, 5, 25, 17, 10, 0)
+
+    def test_returns_none_when_no_rate_limit_info(self):
+        assert parse_reset_time_from_event({"type": "result"}) is None
+
+    def test_returns_none_when_no_resets_at(self):
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}}
+        assert parse_reset_time_from_event(event) is None
+
+    def test_past_timestamp_returned_as_is(self):
+        # Caller checks if past — we just parse
+        event = {"type": "rate_limit_event", "rate_limit_info": {"resetsAt": 1000000000}}
+        result = parse_reset_time_from_event(event)
+        assert result == datetime(2001, 9, 9, 1, 46, 40)
+
+
+class TestParseResetTime:
+    def test_future_reset_returns_utc(self):
+        # 12:00 UTC = 17:30 IST. Reset at 10:40pm IST = 17:10 UTC — within 2h, return it
+        now = datetime(2026, 5, 25, 12, 0, 0)
+        result = parse_reset_time("resets 10:40pm (Asia/Kolkata)", _now_utc=now)
+        assert result == datetime(2026, 5, 25, 17, 10, 0)
+
+    def test_past_reset_returns_immediate(self):
+        # 18:00 UTC = 23:30 IST. Reset at 10:40pm IST (17:10 UTC) — already past
+        now = datetime(2026, 5, 25, 18, 0, 0)
+        result = parse_reset_time("resets 10:40pm (Asia/Kolkata)", _now_utc=now)
+        assert result == now  # returns now_utc immediately
+
+    def test_stale_message_over_6h_returns_immediate(self):
+        # 06:00 UTC = 11:30 IST. Reset at 10:40pm IST = ~11h away → stale, resume now
+        now = datetime(2026, 5, 25, 6, 0, 0)
+        result = parse_reset_time("resets 10:40pm (Asia/Kolkata)", _now_utc=now)
+        assert result == now
+
+    def test_no_match_returns_none(self):
+        assert parse_reset_time("Task completed successfully") is None
+
+    def test_12pm_noon(self):
+        # 05:00 UTC = 10:30 IST. Reset at 12:00pm IST = 06:30 UTC — within 2h
+        now = datetime(2026, 5, 25, 5, 0, 0)
+        result = parse_reset_time("resets 12:00pm (Asia/Kolkata)", _now_utc=now)
+        assert result == datetime(2026, 5, 25, 6, 30, 0)  # 12:00pm IST = 06:30 UTC
+
+    def test_12am_midnight_already_past(self):
+        # 17:00 UTC = 22:30 IST. "12:00am IST" = midnight today IST = 00:00 IST
+        # which is already past (00:00 < 22:30) → resume immediately
+        now = datetime(2026, 5, 25, 17, 0, 0)
+        result = parse_reset_time("resets 12:00am (Asia/Kolkata)", _now_utc=now)
+        assert result == now
+
+    def test_12am_midnight_future(self):
+        # 12:00 UTC = 17:30 IST. "12:00am IST" = midnight = 00:00 IST → past → immediate
+        # Use a time where midnight IST is still in the future: 10:00 UTC = 15:30 IST
+        now = datetime(2026, 5, 25, 10, 0, 0)
+        result = parse_reset_time("resets 12:00am (Asia/Kolkata)", _now_utc=now)
+        # 12:00am IST = 18:30 UTC, which is 8.5h away → >6h guard → immediate
+        assert result == now
+
+    def test_within_1h_future(self):
+        # 16:20 UTC = 21:50 IST. Reset at 10:40pm IST = 17:10 UTC — 50min away
+        now = datetime(2026, 5, 25, 16, 20, 0)
+        result = parse_reset_time("resets 10:40pm (Asia/Kolkata)", _now_utc=now)
+        assert result == datetime(2026, 5, 25, 17, 10, 0)
