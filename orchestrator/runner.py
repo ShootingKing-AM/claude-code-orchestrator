@@ -135,8 +135,9 @@ async def send_message(job: Job, message: str, store: Store, broadcast) -> StopR
 
 
 # Fields that may contain large base64 blobs — strip before broadcasting
-_BINARY_FIELDS = {"data", "image_data", "source", "content"}
-_MAX_FIELD_BYTES = 2000  # truncate any string field over this in broadcast
+# NOTE: "content" is intentionally excluded — it carries tool result text, not binary data
+_BINARY_FIELDS = {"data", "image_data", "source"}
+_MAX_FIELD_BYTES = 20_000  # truncate any string field over this in broadcast
 
 
 def _sanitise_for_broadcast(event: dict, seq: int, raw_line: str) -> dict:

@@ -626,7 +626,7 @@ function renderEvent(data, outerType) {
         const inputStr = formatToolInput(name, input);
         el._content.innerHTML =
           `<span class="tool-name">❯ ${escHtml(name)}</span>` +
-          (inputStr ? `<span class="tool-input">${escHtml(inputStr)}</span>` : "");
+          (inputStr ? `<pre class="tool-input">${escHtml(inputStr)}</pre>` : "");
         frag.appendChild(el);
       }
       return frag;
@@ -636,7 +636,7 @@ function renderEvent(data, outerType) {
       const text = extractToolResultText(parsed);
       if (!text || !text.trim()) return null;
       const el = block("tool_result", ts, "tool-result-block");
-      el._content.innerHTML = `<span class="tool-result-label">◀ result</span><span class="tool-result-text">${escHtml(truncate(text, 600))}</span>`;
+      el._content.innerHTML = `<span class="tool-result-label">◀ result</span><pre class="tool-result-text">${escHtml(truncate(text, 8000))}</pre>`;
       return el;
     }
 
@@ -739,11 +739,16 @@ function extractErrorMessage(ev) {
 
 function formatToolInput(name, input) {
   if (!input || typeof input !== "object") return "";
-  const val = input.command ?? input.file_path ?? input.path ?? input.content ?? input.query ?? input.url ?? null;
-  if (val !== null) return truncate(String(val), 200);
+  // For single-value tools show the value directly; for multi-key show all as key: value lines
+  const PRIMARY = ["command", "file_path", "path", "query", "url"];
+  const primary = PRIMARY.find(k => input[k] !== undefined);
   const keys = Object.keys(input);
-  if (keys.length) return truncate(`${keys[0]}: ${JSON.stringify(input[keys[0]])}`, 200);
-  return "";
+  if (primary && keys.length === 1) return String(input[primary]);
+  // Multi-field: show each key on its own line
+  return keys.map(k => {
+    const v = typeof input[k] === "string" ? input[k] : JSON.stringify(input[k]);
+    return `${k}: ${v}`;
+  }).join("\n");
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
