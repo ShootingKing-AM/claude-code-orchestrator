@@ -248,10 +248,15 @@ function renderJobList(jobs) {
     const ctxBadge = jobCtx >= 500_000
       ? `<span class="ctx-badge ${jobCtx >= 1_500_000 ? 'ctx-badge-danger' : 'ctx-badge-warn'}" title="Context size: ${fmtNum(jobCtx)} tokens — large context burns limits fast">ctx ${fmtNum(jobCtx)}</span>`
       : "";
+    const backendBadge = job.backend === "copilot"
+      ? `<span class="badge-backend badge-backend-copilot" title="GitHub Copilot backend">Copilot</span>`
+      : job.backend === "copilot-agent"
+      ? `<span class="badge-backend badge-backend-copilot-agent" title="Copilot Agent (tools)">Copilot Agent</span>`
+      : `<span class="badge-backend badge-backend-cli" title="Claude CLI backend">CLI</span>`;
     el.innerHTML = `
       <div class="job-item-prompt">${escHtml(label)}${unreadDot}</div>
       <div class="job-item-meta">
-        ${queueBadge}${ctxBadge}${msgBadge}
+        ${queueBadge}${ctxBadge}${msgBadge}${backendBadge}
         <span class="badge badge-${job.state}">${formatState(job.state)}</span>
         <span class="job-item-time">${ts}</span>
       </div>`;
@@ -275,9 +280,12 @@ async function openJob(jobId) {
   _renderedSeqs.clear();
   _seenSessionIds.clear();
   _pendingUserMsgs.clear();
+  _lastAssistantBlock = null;
 
   const res = await fetch(`/api/jobs/${jobId}`);
+  if (activeJobId !== jobId) return;  // user switched jobs while fetching
   activeJob = await res.json();
+  if (activeJobId !== jobId) return;  // user switched again during JSON parse
 
   renderDetailPanel(activeJob);
   outputWrap.innerHTML = "";
@@ -312,6 +320,26 @@ function renderDetailPanel(job) {
   metaId.title        = job.id;
   metaCreated.textContent = fmtTime(job.created_at);
   metaUpdated.textContent = fmtTime(job.updated_at);
+
+  // Backend badge in detail title area
+  const existingBackendBadge = document.getElementById("meta-backend-badge");
+  if (existingBackendBadge) existingBackendBadge.remove();
+  const backendBadgeEl = document.createElement("span");
+  backendBadgeEl.id = "meta-backend-badge";
+  if (job.backend === "copilot") {
+    backendBadgeEl.className = "badge-backend badge-backend-copilot";
+    backendBadgeEl.title = "GitHub Copilot backend";
+    backendBadgeEl.textContent = "Copilot";
+  } else if (job.backend === "copilot-agent") {
+    backendBadgeEl.className = "badge-backend badge-backend-copilot-agent backend-badge";
+    backendBadgeEl.title = "Copilot Agent (tool-augmented)";
+    backendBadgeEl.textContent = "Copilot Agent";
+  } else {
+    backendBadgeEl.className = "badge-backend badge-backend-cli";
+    backendBadgeEl.title = "Claude CLI backend";
+    backendBadgeEl.textContent = "CLI";
+  }
+  detailTitle.insertAdjacentElement("afterend", backendBadgeEl);
 
   const effortSelect = document.getElementById("meta-effort-select");
   const modelSelect  = document.getElementById("meta-model-select");
@@ -743,25 +771,27 @@ function escHtml(s) {
 
 let _sseReconnectTimer = null;
 let _streamDone = false;  // true once server sent stream_end for this job
+let _lastAssistantBlock = null;  // for merging consecutive streaming assistant chunks
 
 function openSse(jobId) {
   _streamDone = false;
   const url = `/api/jobs/${jobId}/stream?after=${seqCount}`;
-  evtSource = new EventSource(url);
+  const es = new EventSource(url);  // local ref so onerror can't close a newer connection
+  evtSource = es;
 
-  evtSource.onopen = () => {
+  es.onopen = () => {
     statusDot.className = "connected";
     statusText.textContent = "Connected";
     if (_sseReconnectTimer) { clearTimeout(_sseReconnectTimer); _sseReconnectTimer = null; }
   };
 
-  evtSource.onmessage = e => {
+  es.onmessage = e => {
     try { handleEvent(JSON.parse(e.data)); } catch {}
   };
 
-  evtSource.onerror = () => {
-    evtSource.close();
-    evtSource = null;
+  es.onerror = () => {
+    es.close();                               // close THIS specific connection
+    if (evtSource === es) evtSource = null;  // only clear global if it still points here
 
     // If stream_end was already received, or job is terminal: show Finished, no reconnect
     if (_streamDone || (activeJob && isTerminal(activeJob.state))) {
@@ -853,7 +883,7 @@ function handleEvent(data) {
 
   // Update thinking label when tool activity is seen
   if ((type === "assistant" || type === "tool_use") && activeJob && activeJob.state === "running") {
-    const parts = Array.isArray(parsed?.message?.content) ? parsed.message.content : [];
+    const parts = Array.isArray(data?.message?.content) ? data.message.content : [];
     const toolName = data.name || parts.find(p => p.type === "tool_use")?.name;
     if (toolName) setThinking(true, `Running ${toolName}…`);
     else setThinking(true, "Claude is working…");
@@ -861,8 +891,50 @@ function handleEvent(data) {
     setThinking(true, "Claude is working…");
   }
 
+  // ── Streaming merge: consecutive single-text assistant chunks → one block ──
+  if (type === "assistant") {
+    const src = data.event_type
+      ? (() => { try { return JSON.parse(data.raw || "{}"); } catch { return {}; } })()
+      : data;
+    const parts = Array.isArray(src?.message?.content) ? src.message.content : [];
+    if (parts.length === 1 && parts[0].type === "text" && parts[0].text) {
+      if (_lastAssistantBlock) {
+        // Append chunk to existing block instead of creating a new one
+        _lastAssistantBlock._rawText = (_lastAssistantBlock._rawText || "") + parts[0].text;
+        _lastAssistantBlock._content.innerHTML = renderMarkdown(_lastAssistantBlock._rawText);
+        scrollToBottom();
+        return;
+      }
+      // First chunk — let renderEvent create the block, then capture it below
+    } else {
+      _lastAssistantBlock = null;  // multi-part or tool_use: stop merging
+    }
+  } else {
+    _lastAssistantBlock = null;  // any non-assistant event breaks the merge chain
+  }
+
   const node = renderEvent(data, type);
-  if (node) { outputWrap.appendChild(node); scrollToBottom(); }
+  if (node) {
+    outputWrap.appendChild(node);
+    scrollToBottom();
+    // Capture newly added assistant block for future chunk merging
+    if (type === "assistant") {
+      const last = outputWrap.lastElementChild;
+      if (last && last.classList.contains("ev-assistant")) {
+        _lastAssistantBlock = last;
+        // Seed _rawText from the first chunk so subsequent appends accumulate correctly
+        const src2 = data.event_type
+          ? (() => { try { return JSON.parse(data.raw || "{}"); } catch { return {}; } })()
+          : data;
+        const parts2 = Array.isArray(src2?.message?.content) ? src2.message.content : [];
+        if (parts2.length === 1 && parts2[0].type === "text") {
+          _lastAssistantBlock._rawText = parts2[0].text;
+        }
+      } else {
+        _lastAssistantBlock = null;
+      }
+    }
+  }
 }
 
 // ── User message text renderer ────────────────────────────────────────────────
@@ -1201,7 +1273,10 @@ function closeModal() {
   if (modelInput) modelInput.value = "";
   if (maxTurnsInput) maxTurnsInput.value = "";
   if (effortInput) effortInput.value = "";
+  const backendSelect = document.getElementById('backend-select');
+  if (backendSelect) backendSelect.value = 'claude';
   if (typeof modalAttachments !== "undefined") modalAttachments.clear();
+  updateModelOptions();
 }
 
 document.getElementById("modal-cancel").addEventListener("click", closeModal);
@@ -1218,6 +1293,8 @@ async function submitJob() {
   const max_turns_raw = maxTurnsInput ? parseInt(maxTurnsInput.value, 10) : NaN;
   const max_turns = isNaN(max_turns_raw) ? null : max_turns_raw;
   const effort = effortInput ? effortInput.value || null : null;
+  const backendSelect = document.getElementById('backend-select');
+  const backend = backendSelect ? backendSelect.value || 'claude' : 'claude';
   const paths = (typeof modalAttachments !== "undefined") ? modalAttachments.consumePaths() : [];
   const prompt = paths.length
     ? rawPrompt + "\n\nAttached files:\n" + paths.map(p => "- " + p).join("\n")
@@ -1226,7 +1303,7 @@ async function submitJob() {
   const res = await fetch("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, working_dir, title, model, max_turns, effort }),
+    body: JSON.stringify({ prompt, working_dir, title, model, max_turns, effort, backend }),
   });
   const job = await res.json();
   await loadJobList();
@@ -1346,3 +1423,46 @@ document.getElementById("modal-attach").addEventListener("click", () => modalAtt
 document.getElementById("msg-attach").addEventListener("click", () => msgAttachments.openPicker());
 
 loadJobList();
+
+// ── Backend availability ──────────────────────────────────────────────────────
+
+async function initBackends() {
+  try {
+    const res = await fetch('/api/backends');
+    if (!res.ok) return;
+    const data = await res.json();
+    const backendSelect = document.getElementById('backend-select');
+    if (!backendSelect) return;
+    const copilotOpt = backendSelect.querySelector('option[value="copilot"]');
+    const copilotAgentOpt = backendSelect.querySelector('option[value="copilot-agent"]');
+    if (copilotOpt && !data.copilot_available) {
+      copilotOpt.disabled = true;
+      copilotOpt.textContent = 'GitHub Copilot (GITHUB_TOKEN not set)';
+    }
+    if (copilotAgentOpt && !data.copilot_available) {
+      copilotAgentOpt.disabled = true;
+      copilotAgentOpt.textContent = 'Copilot Agent (GITHUB_TOKEN not set)';
+    }
+  } catch {}
+}
+
+initBackends();
+
+// ── Filter model options by backend ──────────────────────────────────────────
+function updateModelOptions() {
+  const backendSelect = document.getElementById('backend-select');
+  const modelSelect   = document.getElementById('model-input');
+  if (!backendSelect || !modelSelect) return;
+  const backend = backendSelect.value || 'claude';
+  for (const opt of modelSelect.options) {
+    const b = opt.dataset.backend;
+    opt.hidden = b ? b !== backend : false;  // options with no data-backend always show
+  }
+  // Reset to default if current selection is now hidden
+  const chosen = modelSelect.options[modelSelect.selectedIndex];
+  if (chosen && chosen.hidden) modelSelect.value = '';
+}
+
+document.getElementById('backend-select')
+  ?.addEventListener('change', updateModelOptions);
+updateModelOptions();  // run once on page load

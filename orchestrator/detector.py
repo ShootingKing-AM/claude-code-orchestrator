@@ -21,6 +21,8 @@ LIMIT_PATTERNS = [
     re.compile(r"weekly.limit", re.IGNORECASE),
     re.compile(r"plan.limit", re.IGNORECASE),
     re.compile(r"HTTP 529", re.IGNORECASE),
+    re.compile(r"copilot.*limit", re.IGNORECASE),
+    re.compile(r"token.*limit.*exceeded", re.IGNORECASE),
 ]
 
 # Primary: these HTTP status codes in api_error_status always mean limit hit

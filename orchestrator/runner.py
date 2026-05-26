@@ -26,6 +26,14 @@ async def run_job(job: Job, store: Store, broadcast, message: str | None = None)
     `broadcast` is an async callable(job_id, event_dict) used to push events
     to SSE subscribers.
     """
+    if job.backend == "copilot":
+        from . import copilot_runner
+        return await copilot_runner.run_copilot_job(job, store, broadcast, message=message)
+
+    if job.backend == "copilot-agent":
+        from . import copilot_runner
+        return await copilot_runner.run_copilot_agent_job(job, store, broadcast, message=message)
+
     cmd = _build_command(job, message=message)
     cwd = job.working_dir or str(Path.home())
 
@@ -131,6 +139,10 @@ def _build_command(job: Job, message: str | None = None) -> list[str]:
 
 async def send_message(job: Job, message: str, store: Store, broadcast) -> StopReason:
     """Send an additional message into an existing Claude session."""
+    if job.backend in ("copilot", "copilot-agent"):
+        from . import copilot_runner
+        return await copilot_runner.send_copilot_message(job, message, store, broadcast)
+
     if not job.session_id:
         raise ValueError("Job has no session_id — cannot send message before session starts")
 

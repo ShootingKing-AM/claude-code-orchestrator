@@ -42,11 +42,14 @@ class Job:
     model: Optional[str] = None             # --model flag (None = claude default)
     max_turns: Optional[int] = None         # --max-turns flag (None = unlimited)
     effort: Optional[str] = None            # --effort flag (low/medium/high/xhigh/max)
+    backend: str = "claude"                 # "claude" or "copilot"
     input_tokens: int = 0                   # uncached input tokens (usually tiny)
     output_tokens: int = 0
     cache_read_tokens: int = 0              # input tokens served from prompt cache
     cache_creation_tokens: int = 0          # input tokens written to prompt cache
     total_cost_usd: float = 0.0             # cumulative USD cost across all runs
+    # Transient — rebuilt on resume from SQLite logs, never persisted
+    conversation_history: list = field(default_factory=list)
 
     def transition(self, new_state: JobState) -> None:
         allowed = VALID_TRANSITIONS.get(self.state, set())
@@ -78,6 +81,7 @@ class Job:
             "model": self.model,
             "max_turns": self.max_turns,
             "effort": self.effort,
+            "backend": self.backend,
         }
 
     @classmethod
@@ -99,4 +103,5 @@ class Job:
         j.model = d.get("model")
         j.max_turns = d.get("max_turns")
         j.effort = d.get("effort")
+        j.backend = d.get("backend", "claude")
         return j

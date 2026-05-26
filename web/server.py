@@ -6,6 +6,13 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path as _Path
+
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_Path(__file__).parent.parent / ".env", override=False)
+except ImportError:
+    pass  # dotenv optional — env vars must be set manually
 import shutil
 import signal
 import uuid
@@ -89,11 +96,13 @@ class StartJobRequest(BaseModel):
     model: str | None = None
     max_turns: int | None = None
     effort: str | None = None
+    backend: str = "claude"
 
 
 @app.post("/api/jobs")
 async def start_job(req: StartJobRequest):
     effort = req.effort if req.effort in _VALID_EFFORT else None
+    backend = req.backend if req.backend in ("claude", "copilot", "copilot-agent") else "claude"
     job = Job(
         prompt=req.prompt,
         working_dir=req.working_dir,
@@ -101,6 +110,7 @@ async def start_job(req: StartJobRequest):
         model=req.model or None,
         max_turns=req.max_turns or None,
         effort=effort,
+        backend=backend,
     )
     scheduler.start_job(job)
     return job.to_dict()
@@ -182,6 +192,13 @@ async def force_resume_job(job_id: str):
 @app.get("/api/queue")
 async def get_queue():
     return scheduler.queue_status()
+
+
+@app.get("/api/backends")
+async def get_backends():
+    """Return available backends and whether the Copilot backend is configured."""
+    copilot_available = bool(os.environ.get("GITHUB_TOKEN"))
+    return {"backends": ["claude", "copilot", "copilot-agent"], "copilot_available": copilot_available}
 
 
 @app.get("/api/stats")
@@ -475,7 +492,8 @@ async def stream_job(job_id: str, after: int = -1):
 
 def main():
     import uvicorn
-    uvicorn.run("web.server:app", host="0.0.0.0", port=8888, reload=False)
+    port = int(os.environ.get("PORT", 8888))
+    uvicorn.run("web.server:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":
